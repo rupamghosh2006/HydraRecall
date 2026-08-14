@@ -53,6 +53,16 @@ const auth = createAuth({
 
 let memory = freshMemory();
 let graphState = { status: "not-configured", lastSyncAt: null, message: "Awaiting local HydraDB." };
+let geminiCooldownUntil = 0;
+
+class GeminiRateLimitError extends Error {
+  constructor(retryAfter = 60) {
+    super("Gemini rate limit reached.");
+    this.name = "GeminiRateLimitError";
+    this.status = 429;
+    this.retryAfter = Math.max(1, Math.ceil(retryAfter));
+  }
+}
 
 function freshMemory() {
   return JSON.parse(readFileSync(seedPath, "utf8"));
@@ -410,9 +420,21 @@ function geminiText(payload) {
   return (payload?.candidates?.[0]?.content?.parts || []).map((part) => part?.text || "").join("\n").trim();
 }
 
+function geminiRetryAfter(response, payload) {
+  const headerSeconds = Number(response.headers.get("retry-after"));
+  if (Number.isFinite(headerSeconds) && headerSeconds > 0) return headerSeconds;
+  const detail = Array.isArray(payload?.error?.details)
+    ? payload.error.details.find((item) => typeof item?.retryDelay === "string")
+    : null;
+  const delaySeconds = Number.parseFloat(detail?.retryDelay || "");
+  return Number.isFinite(delaySeconds) && delaySeconds > 0 ? delaySeconds : 60;
+}
+
 async function geminiJsonCompletion({ system, user, maxTokens }) {
   const attempts = 3;
   let lastError = null;
+  const cooldownMs = geminiCooldownUntil - Date.now();
+  if (cooldownMs > 0) throw new GeminiRateLimitError(cooldownMs / 1_000);
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.geminiModel)}:generateContent`, {
@@ -426,15 +448,20 @@ async function geminiJsonCompletion({ system, user, maxTokens }) {
         signal: AbortSignal.timeout(60_000),
       });
       if (response.ok) return response.json();
+      const payload = await response.json().catch(() => null);
+      if (response.status === 429) {
+        const retryAfter = geminiRetryAfter(response, payload);
+        geminiCooldownUntil = Math.max(geminiCooldownUntil, Date.now() + retryAfter * 1_000);
+        throw new GeminiRateLimitError(retryAfter);
+      }
       lastError = new Error(`Gemini returned ${response.status}`);
-      if (response.status !== 429 && response.status < 500) break;
+      if (response.status < 500) break;
       if (attempt < attempts) {
-        const retryAfter = Number(response.headers.get("retry-after"));
-        const backoffMs = Math.min(60_000, retryAfter > 0 ? retryAfter * 1_000 : 1_000 * 2 ** attempt);
-        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        await new Promise((resolve) => setTimeout(resolve, 1_000 * 2 ** attempt));
       }
       continue;
     } catch (error) {
+      if (error instanceof GeminiRateLimitError) throw error;
       lastError = error;
       if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, Math.min(60_000, 1_000 * 2 ** attempt)));
     }
@@ -462,7 +489,8 @@ async function answerLongMemEval(record, { topK = 8, runId = "longmemeval", sync
         abstained = Boolean(parsed.abstained);
         reader = "gemini-grounded-reader";
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof GeminiRateLimitError) throw error;
       reader = "deterministic-fallback";
     }
   }
@@ -649,8 +677,10 @@ const server = createServer(async (request, response) => {
     }
     return serveStatic(request, response, decodeURIComponent(url.pathname));
   } catch (error) {
-    const status = error instanceof SyntaxError || /must be an object|need question_id|mismatched haystack|must be an array/i.test(error.message || "") ? 400 : 500;
-    return json(response, status, { error: status === 400 ? error.message : "Unexpected server error." }, request);
+    const rateLimited = error instanceof GeminiRateLimitError;
+    if (rateLimited) response.setHeader("Retry-After", String(error.retryAfter));
+    const status = rateLimited ? 429 : (error instanceof SyntaxError || /must be an object|need question_id|mismatched haystack|must be an array/i.test(error.message || "") ? 400 : 500);
+    return json(response, status, { error: status === 400 ? error.message : rateLimited ? "Gemini capacity is temporarily exhausted. Retry after the supplied delay." : "Unexpected server error." }, request);
   }
 });
 

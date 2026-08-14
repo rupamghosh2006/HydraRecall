@@ -37,7 +37,7 @@ Start the app, configure `GEMINI_API_KEY` for the grounded Gemini Flash reader, 
 npm.cmd run eval:longmem -- --input data/longmemeval/longmemeval_s_cleaned.json --top-k 8 --run-id hydrarecall-lme-s
 ```
 
-`--pace-ms` inserts a minimum delay between live reader calls, and `--resume` skips `question_id`s already present in the output file so an interrupted run can be restarted without losing progress. Both the hypotheses and evidence files are appended per question, so a killed run never loses completed answers.
+`--pace-ms` inserts a minimum delay between live reader calls, and `--resume` skips `question_id`s already present in the output file so an interrupted run can be restarted without losing progress. Both the hypotheses and evidence files are appended per question, so a killed run never loses completed answers. On the Gemini free tier, use `--pace-ms 15000 --max-retries 20`; a Gemini 429 is surfaced with its retry window rather than being silently converted into a fallback answer.
 
 Set `BENCHMARK_READER_MODE=deterministic` when you only want to profile retrieval and graph evidence without sending reader calls to Gemini. The report will make any resulting over-abstention visible.
 

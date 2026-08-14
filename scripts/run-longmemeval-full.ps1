@@ -1,7 +1,7 @@
 param(
   [string]$RunId = "hydrarecall-lme-s",
   [int]$TopK = 8,
-  [int]$PaceMs = 4000,
+  [int]$PaceMs = 15000,
   [switch]$SyncHydra,
   [string]$Input = "data/longmemeval/longmemeval_s_cleaned.json",
   [string]$Endpoint = "http://127.0.0.1:3000"

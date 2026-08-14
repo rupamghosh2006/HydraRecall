@@ -149,7 +149,9 @@ async function callReader(options, record, attempt = 1) {
   const retryAfter = parseRetrySeconds(body?.retryAfter ?? response.headers.get("retry-after"));
   const retriable = response.status === 429 || response.status >= 500;
   if (retriable && attempt <= options.maxRetries) {
-    const delay = retryAfter ? Math.min(60_000, retryAfter * 1_000) : Math.min(30_000, 1_000 * 2 ** (attempt - 1));
+    // Gemini can report a retry window that ends on a quota boundary. Add a
+    // small cushion so the next request is not sent into the same window.
+    const delay = retryAfter ? Math.min(300_000, retryAfter * 1_000 + 5_000) : Math.min(30_000, 1_000 * 2 ** (attempt - 1));
     console.log(`  retry ${attempt}/${options.maxRetries} for ${record.question_id} in ${delay} ms (HTTP ${response.status})`);
     await sleep(delay);
     return callReader(options, record, attempt + 1);
