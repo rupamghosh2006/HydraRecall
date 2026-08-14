@@ -8,7 +8,14 @@
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
     "setup": "node scripts/setup-local.mjs",
-    "check": "node --check server.mjs && node --check public/app.js && node --check scripts/setup-local.mjs"
+    "config:migrate-gemini": "node scripts/migrate-gemini-env.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check scripts/setup-local.mjs && node --check scripts/longmemeval-adapter.mjs && node --check lib/security.mjs && node --check lib/longmemeval.mjs",
+    "auth:create-key": "node scripts/create-api-key.mjs",
+    "test:auth": "node scripts/check-production-auth.mjs",
+    "test:api": "node scripts/check-api-auth.mjs",
+    "eval:longmem": "node scripts/longmemeval-adapter.mjs",
+    "eval:longmem:dry": "node scripts/longmemeval-adapter.mjs --input data/fixtures/longmemeval-mini.json --dry-run",
+    "eval:longmem:judge": "python scripts/longmemeval-judge-gemini.py"
   },
   "engines": {
     "node": ">=20"

@@ -4,6 +4,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createAuth } from "./lib/security.mjs";
+import { buildLongMemEvalReaderPrompt, normalizeLongMemEvalRecord, retrieveLongMemEvidence } from "./lib/longmemeval.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, "public");
@@ -33,9 +35,21 @@ const config = {
   graphId: process.env.HYDRADB_GRAPH_ID || "hydrarecall",
   namespace: process.env.HYDRADB_NAMESPACE || "hydrarecall",
   cellId: process.env.HYDRADB_CELL_ID || "cell-0",
-  groqKey: process.env.GROQ_API_KEY || "",
-  groqModel: process.env.GROQ_MODEL || "openai/gpt-oss-20b",
+  geminiKey: process.env.GEMINI_API_KEY || "",
+  geminiModel: process.env.GEMINI_MODEL || "gemini-3.5-flash",
+  benchmarkReaderMode: (process.env.BENCHMARK_READER_MODE || "auto").toLowerCase(),
+  authMode: process.env.AUTH_MODE || "disabled",
+  apiKeyHashes: process.env.HYDRARECALL_API_KEY_HASHES || "",
+  corsOrigins: process.env.CORS_ORIGINS || "",
+  rateLimitPerMinute: Number(process.env.AUTH_RATE_LIMIT_PER_MINUTE || 120),
 };
+
+const auth = createAuth({
+  mode: config.authMode,
+  apiKeyHashes: config.apiKeyHashes,
+  corsOrigins: config.corsOrigins,
+  maxPerMinute: config.rateLimitPerMinute,
+});
 
 let memory = freshMemory();
 let graphState = { status: "not-configured", lastSyncAt: null, message: "Awaiting local HydraDB." };
@@ -44,25 +58,26 @@ function freshMemory() {
   return JSON.parse(readFileSync(seedPath, "utf8"));
 }
 
-function json(response, statusCode, payload) {
+function json(response, statusCode, payload, request) {
   response.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
+    ...auth.headers(request),
   });
   response.end(JSON.stringify(payload));
 }
 
-function text(response, statusCode, payload, type = "text/plain; charset=utf-8") {
-  response.writeHead(statusCode, { "Content-Type": type });
+function text(response, statusCode, payload, type = "text/plain; charset=utf-8", request) {
+  response.writeHead(statusCode, { "Content-Type": type, ...auth.headers(request) });
   response.end(payload);
 }
 
-async function readJson(request) {
+async function readJson(request, maxBytes = 1_000_000) {
   const chunks = [];
   let total = 0;
   for await (const chunk of request) {
     total += chunk.length;
-    if (total > 1_000_000) throw new Error("Request body is too large.");
+    if (total > maxBytes) throw new Error("Request body is too large.");
     chunks.push(chunk);
   }
   if (!chunks.length) return {};
@@ -363,29 +378,14 @@ function fallbackClaim(text, occurredAt, turnId) {
 }
 
 async function extractClaims(text, occurredAt, turnId) {
-  if (!config.groqKey) return { claims: [fallbackClaim(text, occurredAt, turnId)], mode: "deterministic" };
+  if (!config.geminiKey) return { claims: [fallbackClaim(text, occurredAt, turnId)], mode: "deterministic" };
   try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${config.groqKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: config.groqModel,
-        temperature: 0,
-        max_tokens: 600,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content: "Extract durable, user-supported memory claims. Return JSON only: {\"claims\":[{\"entity\":string,\"slot\":string,\"value\":string,\"confidence\":number}]}. Do not invent facts. Return an empty list when no durable claim exists.",
-          },
-          { role: "user", content: text },
-        ],
-      }),
-      signal: AbortSignal.timeout(15_000),
+    const result = await geminiJsonCompletion({
+      system: "Extract durable, user-supported memory claims. Return JSON only: {\"claims\":[{\"entity\":string,\"slot\":string,\"value\":string,\"confidence\":number}]}. Do not invent facts. Return an empty list when no durable claim exists.",
+      user: text,
+      maxTokens: 600,
     });
-    if (!response.ok) throw new Error(`Groq returned ${response.status}`);
-    const result = await response.json();
-    const parsed = JSON.parse(result.choices?.[0]?.message?.content || "{}");
+    const parsed = JSON.parse(geminiText(result) || "{}");
     const claims = (Array.isArray(parsed.claims) ? parsed.claims : [])
       .filter((claim) => claim?.entity && claim?.slot && claim?.value)
       .slice(0, 4)
@@ -400,9 +400,111 @@ async function extractClaims(text, occurredAt, turnId) {
         sourceTurnId: turnId,
         confidence: Math.min(1, Math.max(0, Number(claim.confidence) || 0.75)),
       }));
-    return { claims: claims.length ? claims : [fallbackClaim(text, occurredAt, turnId)], mode: "groq" };
+    return { claims: claims.length ? claims : [fallbackClaim(text, occurredAt, turnId)], mode: "gemini" };
   } catch {
     return { claims: [fallbackClaim(text, occurredAt, turnId)], mode: "deterministic-fallback" };
+  }
+}
+
+function geminiText(payload) {
+  return (payload?.candidates?.[0]?.content?.parts || []).map((part) => part?.text || "").join("\n").trim();
+}
+
+async function geminiJsonCompletion({ system, user, maxTokens }) {
+  const attempts = 3;
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.geminiModel)}:generateContent`, {
+        method: "POST",
+        headers: { "x-goog-api-key": config.geminiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: system }] },
+          contents: [{ role: "user", parts: [{ text: user }] }],
+          generationConfig: { temperature: 0, maxOutputTokens: maxTokens, responseMimeType: "application/json" },
+        }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (response.ok) return response.json();
+      lastError = new Error(`Gemini returned ${response.status}`);
+      if (response.status !== 429 && response.status < 500) break;
+      if (attempt < attempts) {
+        const retryAfter = Number(response.headers.get("retry-after"));
+        const backoffMs = Math.min(60_000, retryAfter > 0 ? retryAfter * 1_000 : 1_000 * 2 ** attempt);
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      }
+      continue;
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, Math.min(60_000, 1_000 * 2 ** attempt)));
+    }
+  }
+  throw lastError || new Error("Gemini request failed");
+}
+
+async function answerLongMemEval(record, { topK = 8, runId = "longmemeval", syncGraph = false } = {}) {
+  const normalized = normalizeLongMemEvalRecord(record);
+  const retrieval = retrieveLongMemEvidence(normalized, { topK });
+  let answer = "I don't know.";
+  let abstained = true;
+  let reader = "deterministic-abstention";
+
+  if (config.benchmarkReaderMode !== "deterministic" && config.geminiKey && retrieval.evidence.length) {
+    try {
+      const body = await geminiJsonCompletion({
+        system: "You are a rigorous long-term memory reader. Follow the user instructions exactly and return valid JSON only.",
+        user: buildLongMemEvalReaderPrompt(normalized, retrieval.evidence),
+        maxTokens: 900,
+      });
+      const parsed = JSON.parse(geminiText(body) || "{}");
+      if (typeof parsed.answer === "string" && parsed.answer.trim()) {
+        answer = parsed.answer.trim().slice(0, 4_000);
+        abstained = Boolean(parsed.abstained);
+        reader = "gemini-grounded-reader";
+      }
+    } catch {
+      reader = "deterministic-fallback";
+    }
+  }
+
+  const graph = syncGraph ? await syncBenchmarkEvidence(runId, normalized.questionId, normalized.question, retrieval.evidence) : { status: "not-requested" };
+  return {
+    hypothesis: abstained ? "I don't know." : answer,
+    abstained,
+    reader,
+    retrieval: {
+      totalTurns: retrieval.totalTurns,
+      queryTerms: retrieval.queryTerms,
+      evidence: retrieval.evidence.map(({ content, ...item }) => ({ ...item, excerpt: content.slice(0, 900) })),
+    },
+    graph,
+  };
+}
+
+async function syncBenchmarkEvidence(runId, questionId, question, evidence) {
+  const availability = await checkHydra();
+  if (!availability.connected) return { status: "offline", message: availability.message, proofs: 0 };
+  try {
+    const sampleExternalId = `${runId}:${questionId}`;
+    const sampleId = graphNodeId("benchmark-sample", sampleExternalId);
+    const runNodeId = graphNodeId("benchmark-run", runId);
+    await hydraQuery(
+      `MERGE (r:BenchmarkRun {id: ${runNodeId}, external_id: ${quoteCypher(runId)}})-[:EVALUATES]->(s:BenchmarkSample {id: ${sampleId}, external_id: ${quoteCypher(sampleExternalId)}, question: ${quoteCypher(question.slice(0, 2_000))}})`,
+    );
+    for (const item of evidence) {
+      const sessionExternalId = `${sampleExternalId}:session:${item.sessionId}`;
+      const turnExternalId = `${sampleExternalId}:turn:${item.sessionId}:${item.turnIndex}`;
+      const sessionId = graphNodeId("benchmark-session", sessionExternalId);
+      const turnId = graphNodeId("benchmark-turn", turnExternalId);
+      await hydraQuery(
+        `MERGE (s:BenchmarkSession {id: ${sessionId}, external_id: ${quoteCypher(sessionExternalId)}, source_session_id: ${quoteCypher(item.sessionId)}, occurred_at: ${quoteCypher(item.occurredAt)}})-[:CONTAINS]->(t:BenchmarkTurn {id: ${turnId}, external_id: ${quoteCypher(turnExternalId)}, role: ${quoteCypher(item.role)}, text: ${quoteCypher(item.content)}, rank: ${item.rank}, score: ${Number(item.score)}})`,
+      );
+      await hydraQuery(`MERGE (sample:BenchmarkSample {id: ${sampleId}})-[:RETRIEVED]->(turn:BenchmarkTurn {id: ${turnId}})`);
+    }
+    const verification = await hydraQuery(`MATCH (s:BenchmarkSample {id: ${sampleId}})-[:RETRIEVED]->(t:BenchmarkTurn) RETURN t.external_id AS turn LIMIT 32`);
+    return { status: "connected", proofs: verification.rows?.length || 0, sample: sampleExternalId };
+  } catch (error) {
+    return { status: "degraded", message: "HydraDB proof sync failed.", proofs: 0 };
   }
 }
 
@@ -455,6 +557,14 @@ function dashboardSnapshot() {
   };
 }
 
+function requireRole(request, response, role) {
+  const decision = auth.authorize(request, role);
+  if (decision.ok) return decision.principal;
+  if (decision.retryAfter) response.setHeader("Retry-After", String(decision.retryAfter));
+  json(response, decision.status, { error: decision.message, code: decision.code }, request);
+  return null;
+}
+
 const types = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -471,17 +581,17 @@ async function serveStatic(request, response, pathname) {
   const target = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "").replace(/^assets\//, "");
   const resolved = path.resolve(baseDir, target);
   if (!resolved.startsWith(`${baseDir}${path.sep}`) && resolved !== path.join(baseDir, "index.html")) {
-    text(response, 403, "Forbidden");
+    text(response, 403, "Forbidden", "text/plain; charset=utf-8", request);
     return;
   }
   try {
     const details = await stat(resolved);
     if (!details.isFile()) throw new Error("Not a file");
-    response.writeHead(200, { "Content-Type": types[path.extname(resolved)] || "application/octet-stream" });
+    response.writeHead(200, { "Content-Type": types[path.extname(resolved)] || "application/octet-stream", ...auth.headers(request) });
     response.end(await readFile(resolved));
   } catch {
-    if (!existsSync(path.join(publicDir, "index.html"))) return text(response, 500, "Frontend missing.");
-    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    if (!existsSync(path.join(publicDir, "index.html"))) return text(response, 500, "Frontend missing.", "text/plain; charset=utf-8", request);
+    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...auth.headers(request) });
     response.end(await readFile(path.join(publicDir, "index.html")));
   }
 }
@@ -489,31 +599,58 @@ async function serveStatic(request, response, pathname) {
 const server = createServer(async (request, response) => {
   const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
   try {
+    if (request.method === "OPTIONS") {
+      response.writeHead(204, auth.headers(request));
+      return response.end();
+    }
     if (request.method === "GET" && url.pathname === "/api/health") {
       const hydra = await checkHydra();
-      return json(response, 200, { ok: true, hydra, groqConfigured: Boolean(config.groqKey), graph: graphState });
+      return json(response, 200, { ok: true, hydra, geminiConfigured: Boolean(config.geminiKey), geminiModel: config.geminiModel, graph: graphState, auth: auth.publicStatus() }, request);
     }
-    if (request.method === "GET" && url.pathname === "/api/dashboard") return json(response, 200, dashboardSnapshot());
+    if (request.method === "GET" && url.pathname === "/api/auth/status") {
+      const decision = auth.authenticate(request);
+      return json(response, 200, { ...auth.publicStatus(), authenticated: decision.ok, principal: decision.ok ? { id: decision.principal.id, roles: [...decision.principal.roles] } : null }, request);
+    }
+    if (request.method === "GET" && url.pathname === "/api/dashboard") {
+      if (!requireRole(request, response, "reader")) return;
+      return json(response, 200, dashboardSnapshot(), request);
+    }
     if (request.method === "POST" && url.pathname === "/api/query") {
+      if (!requireRole(request, response, "reader")) return;
       const body = await readJson(request);
-      return json(response, 200, await answerQuestion(String(body.question || "")));
+      return json(response, 200, await answerQuestion(String(body.question || "")), request);
     }
     if (request.method === "POST" && url.pathname === "/api/graph/sync") {
+      if (!requireRole(request, response, "writer")) return;
       const graph = await syncMemoryToHydra();
-      return json(response, 200, { graph, dashboard: dashboardSnapshot() });
+      return json(response, 200, { graph, dashboard: dashboardSnapshot() }, request);
     }
     if (request.method === "POST" && url.pathname === "/api/ingest") {
+      if (!requireRole(request, response, "writer")) return;
       const body = await readJson(request);
-      return json(response, 201, await ingestSession(body));
+      return json(response, 201, await ingestSession(body), request);
     }
     if (request.method === "POST" && url.pathname === "/api/reset") {
+      if (!requireRole(request, response, "admin")) return;
       memory = freshMemory();
       graphState = { status: "not-configured", lastSyncAt: null, message: "Demo memory reset. Sync when the graph node is ready." };
-      return json(response, 200, dashboardSnapshot());
+      return json(response, 200, dashboardSnapshot(), request);
+    }
+    if (request.method === "POST" && url.pathname === "/api/benchmark/longmemeval") {
+      const requestedGraphSync = url.searchParams.get("syncGraph") === "true";
+      if (!requireRole(request, response, "writer")) return;
+      const body = await readJson(request, 20_000_000);
+      const result = await answerLongMemEval(body.record || body, {
+        topK: body.topK,
+        runId: body.runId,
+        syncGraph: requestedGraphSync || Boolean(body.syncGraph),
+      });
+      return json(response, 200, result, request);
     }
     return serveStatic(request, response, decodeURIComponent(url.pathname));
   } catch (error) {
-    return json(response, error instanceof SyntaxError ? 400 : 500, { error: error.message || "Unexpected server error." });
+    const status = error instanceof SyntaxError || /must be an object|need question_id|mismatched haystack|must be an array/i.test(error.message || "") ? 400 : 500;
+    return json(response, status, { error: status === 400 ? error.message : "Unexpected server error." }, request);
   }
 });
 

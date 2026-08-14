@@ -3,4 +3,6 @@
 .env
 node_modules
 vendor
+data/longmemeval
+runs
 README.md

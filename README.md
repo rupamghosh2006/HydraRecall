@@ -28,7 +28,7 @@ This gives the agent four useful guarantees:
 ## Stack
 
 - [HydraDB](https://github.com/hydra-db/hydradb) — self-hosted object-store-native graph database.
-- Groq (optional) — extracts durable claims from newly ingested evidence using `openai/gpt-oss-20b`.
+- Gemini Flash (optional) — extracts durable claims and reads retrieved LongMemEval evidence.
 - Node.js — small, dependency-free API and polished web experience.
 - Docker Compose — one-command demo deployment.
 
@@ -54,11 +54,11 @@ The compose stack exposes:
 | HydraDB HTTP | `http://localhost:8443` | Graph query API |
 | HydraDB admin | `http://localhost:9090/readyz` | Readiness and metrics |
 
-The included demo history works with no external key. To extract structured claims from sessions you add in the UI, set a free Groq key in `.env`:
+The included demo history works with no external key. To extract structured claims from sessions you add in the UI, set a Gemini key in `.env`:
 
 ```env
-GROQ_API_KEY=your_groq_key
-GROQ_MODEL=openai/gpt-oss-20b
+GEMINI_API_KEY=your_gemini_key
+GEMINI_MODEL=gemini-3.5-flash
 ```
 
 Then recreate the app service:
@@ -92,6 +92,22 @@ The included `docker-compose.yml` is ideal for a hackathon demo or single VM. It
 
 For an internet-facing or multi-node deployment, use the production Helm chart in [`vendor/hydradb/charts/hydradb`](vendor/hydradb/charts/hydradb) with S3-compatible object storage, TLS, managed secrets, and separate graph-node/indexer scaling. See [DEPLOYMENT.md](DEPLOYMENT.md) for the deployment checklist.
 
+## LongMemEval evaluation
+
+HydraRecall now ships with a LongMemEval adapter that produces official-compatible hypotheses, an evidence trace, and a retrieval/latency report. Start with the included safe fixture:
+
+```powershell
+npm.cmd run eval:longmem:dry
+```
+
+See [EVALUATION.md](EVALUATION.md) for the dataset download, live reader run, optional HydraDB proof sync, and official scoring workflow.
+
+## Production authentication
+
+Local demos run with `AUTH_MODE=disabled`. Any internet-facing deployment should set `AUTH_MODE=api-key`, create scoped `reader`, `writer`, and `admin` keys, set a precise `CORS_ORIGINS` allowlist, and terminate TLS at the ingress. The browser connection dialog keeps a supplied scoped key in `sessionStorage` only; it never receives the HydraDB or Gemini credentials.
+
+See [DEPLOYMENT.md](DEPLOYMENT.md#production-api-authentication) for the key-generation and role model.
+
 ## Useful commands
 
 ```powershell
@@ -115,7 +131,9 @@ docker compose down
 public/                 HydraDB-inspired UI
 server.mjs              API, evidence logic, and HydraDB graph integration
 data/demo-memory.json   Deterministic demo sessions and claims
-scripts/setup-local.mjs Local token and persistent-store setup
+data/fixtures/          Lightweight LongMemEval-compatible test record
+lib/                    Auth controls and benchmark normalization/retrieval
+scripts/                Setup, API-key, and LongMemEval adapter commands
 docker-compose.yml      App + self-hosted HydraDB graph node
 vendor/hydradb/         Upstream HydraDB Git submodule
 ```

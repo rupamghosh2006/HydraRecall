@@ -2,4 +2,6 @@
 .hydradb/
 node_modules/
 coverage/
+runs/
+data/longmemeval/
 .DS_Store

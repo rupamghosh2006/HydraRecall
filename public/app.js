@@ -1,6 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 
-const state = { dashboard: null, toastTimer: null };
+const state = { dashboard: null, toastTimer: null, apiKey: sessionStorage.getItem("hydrarecall_api_key") || "", auth: null };
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -30,12 +30,21 @@ function showToast(message, isError = false) {
 
 async function api(url, options = {}) {
   const response = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: { "Content-Type": "application/json", ...(state.apiKey ? { "X-API-Key": state.apiKey } : {}), ...(options.headers || {}) },
     ...options,
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
   return payload;
+}
+
+async function refreshAuthStatus() {
+  state.auth = await api("/api/auth/status");
+  const button = $("#authButton");
+  if (state.auth.enabled && state.auth.authenticated) button.textContent = `API key: ${state.auth.principal.id}`;
+  else if (state.auth.enabled) button.textContent = "Connect API key";
+  else button.hidden = true;
+  return state.auth;
 }
 
 function updateGraphStatus(graph) {
@@ -159,6 +168,7 @@ function localDateTimeValue() {
 
 function setupEvents() {
   const dialog = $("#ingestDialog");
+  const authDialog = $("#authDialog");
   $("#openIngest").addEventListener("click", () => {
     $("#ingestDate").value = localDateTimeValue();
     dialog.showModal();
@@ -185,6 +195,30 @@ function setupEvents() {
 
   $("#syncButton").addEventListener("click", syncGraph);
 
+  $("#authButton").addEventListener("click", () => {
+    $("#apiKeyInput").value = state.apiKey;
+    authDialog.showModal();
+  });
+
+  $("#authForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const candidate = $("#apiKeyInput").value.trim();
+    state.apiKey = candidate;
+    try {
+      const status = await refreshAuthStatus();
+      if (status.enabled && !status.authenticated) throw new Error("This API key was not accepted.");
+      sessionStorage.setItem("hydrarecall_api_key", candidate);
+      authDialog.close();
+      await loadDashboard();
+      await runQuery($("#questionInput").value);
+      showToast("Production API key connected for this browser session.");
+    } catch (error) {
+      state.apiKey = "";
+      sessionStorage.removeItem("hydrarecall_api_key");
+      showToast(error.message, true);
+    }
+  });
+
   $("#ingestForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const submit = $("#ingestForm button[type=submit]");
@@ -202,7 +236,7 @@ function setupEvents() {
       dialog.close();
       $("#ingestForm").reset();
       await loadDashboard();
-      const mode = result.extractionMode === "groq" ? "Groq extracted" : "Deterministic extraction created";
+      const mode = result.extractionMode === "gemini" ? "Gemini extracted" : "Deterministic extraction created";
       showToast(`${mode} ${result.claims.length} claim${result.claims.length === 1 ? "" : "s"}. ${result.graph.message}`);
     } catch (error) {
       showToast(error.message, true);
@@ -227,6 +261,16 @@ function setupEvents() {
 
 async function boot() {
   setupEvents();
+  try {
+    const auth = await refreshAuthStatus();
+    if (auth.enabled && !auth.authenticated) {
+      $("#authDialog").showModal();
+      return;
+    }
+  } catch (error) {
+    showToast(`Could not check authentication: ${error.message}`, true);
+    return;
+  }
   await loadDashboard();
   await runQuery($("#questionInput").value);
 }

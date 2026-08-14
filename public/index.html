@@ -17,6 +17,7 @@
         </a>
         <div class="topbar-copy"><span class="pulse"></span> Temporal memory engine</div>
         <div class="topbar-actions">
+          <button class="text-button" id="authButton" type="button">Connect API key</button>
           <button class="text-button" id="syncButton" type="button">Sync HydraDB</button>
           <button class="primary-button compact" id="openIngest" type="button">Ingest session <span>↗</span></button>
         </div>
@@ -149,8 +150,17 @@
         <label>Session title<input id="ingestTitle" maxlength="100" placeholder="e.g. Production review" /></label>
         <label>When did this become true?<input id="ingestDate" type="datetime-local" /></label>
         <label>Conversation evidence<textarea id="ingestText" minlength="8" placeholder="e.g. High-risk payment releases now use a 2% canary..." required></textarea></label>
-        <p class="ingest-note">With a Groq key, claims are extracted automatically. Without it, HydraRecall stores the evidence deterministically and never fabricates missing fields.</p>
+        <p class="ingest-note">With a Gemini key, claims are extracted automatically. Without it, HydraRecall stores the evidence deterministically and never fabricates missing fields.</p>
         <button class="primary-button full" type="submit">Ingest to memory <span>↗</span></button>
+      </form>
+    </dialog>
+
+    <dialog class="ingest-dialog" id="authDialog">
+      <form id="authForm" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">// PRODUCTION ACCESS</p><h2>Connect a scoped<br />API key.</h2></div><button class="close-dialog" value="cancel" aria-label="Close">Ã—</button></div>
+        <label>HydraRecall API key<input id="apiKeyInput" type="password" autocomplete="off" placeholder="hr_..." required /></label>
+        <p class="ingest-note">The key is stored only in this browser tab and is never written to the project, graph, or local storage. Use a scoped production key, not the HydraDB or Gemini secret.</p>
+        <button class="primary-button full" type="submit">Connect key <span>â†—</span></button>
       </form>
     </dialog>
 

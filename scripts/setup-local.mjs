@@ -25,8 +25,8 @@ const defaults = {
   HYDRADB_GRAPH_ID: "hydrarecall",
   HYDRADB_NAMESPACE: "hydrarecall",
   HYDRADB_CELL_ID: "cell-0",
-  GROQ_API_KEY: "",
-  GROQ_MODEL: "openai/gpt-oss-20b",
+  GEMINI_API_KEY: "",
+  GEMINI_MODEL: "gemini-3.5-flash",
   PORT: "3000",
 };
 

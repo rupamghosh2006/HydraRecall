@@ -1,0 +1,29 @@
+[
+  {
+    "question_id": "fixture_deployment",
+    "question_type": "knowledge-update",
+    "question": "What is the current deployment policy?",
+    "answer": "Use progressive canary releases.",
+    "question_date": "2026-05-10",
+    "haystack_session_ids": ["fixture-1", "fixture-2"],
+    "haystack_dates": ["2026-03-01", "2026-04-20"],
+    "haystack_sessions": [
+      [{ "role": "user", "content": "The deployment policy uses direct production releases.", "has_answer": true }],
+      [{ "role": "user", "content": "Update: the deployment policy now uses progressive canary releases with rollback checks.", "has_answer": true }]
+    ],
+    "answer_session_ids": ["fixture-2"]
+  },
+  {
+    "question_id": "fixture_unknown_abs",
+    "question_type": "single-session-user",
+    "question": "What is the favorite JavaScript framework?",
+    "answer": "I don't know.",
+    "question_date": "2026-05-10",
+    "haystack_session_ids": ["fixture-1"],
+    "haystack_dates": ["2026-03-01"],
+    "haystack_sessions": [
+      [{ "role": "user", "content": "The deployment policy uses direct production releases." }]
+    ],
+    "answer_session_ids": []
+  }
+]
