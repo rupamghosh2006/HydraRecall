@@ -285,7 +285,11 @@ async function graphClaimsForSlot(slot) {
   if (graphState.status !== "connected") return null;
   try {
     const payload = await hydraQuery(
-      `MATCH (t:Turn)-[:SUPPORTS]->(c:Claim) WHERE c.slot = ${quoteCypher(slot)} RETURN c.external_id AS claim_id, c.valid_at AS valid_at, c.status AS status ORDER BY valid_at`,
+      `MATCH (t:Turn)-[:SUPPORTS]->(c:Claim) WHERE c.slot = ${quoteCypher(slot)}
+       OPTIONAL MATCH (c)-[:SUPERSEDES*]->(older:Claim)
+       RETURN c.external_id AS claim_id, c.valid_at AS valid_at, c.status AS status,
+              collect(older.external_id) AS supersedes_chain
+       ORDER BY valid_at`,
     );
     return hydraRows(payload);
   } catch {
@@ -469,9 +473,49 @@ async function geminiJsonCompletion({ system, user, maxTokens }) {
   throw lastError || new Error("Gemini request failed");
 }
 
+/**
+ * Query HydraDB for turns that belong to sessions occurring on or before `questionDate`.
+ * Returns a Set<turnId> to use as a candidate filter for BM25 re-ranking, or null when
+ * the graph is offline or no questionDate is provided.
+ *
+ * Cypher strategy:
+ *   MATCH (s:BenchmarkSession)-[:CONTAINS]->(t:BenchmarkTurn)
+ *   WHERE s.occurred_at <= $questionDate
+ *   Returns the bounded candidate pool for this question's temporal context.
+ */
+async function hydraTemporalCandidates(normalized) {
+  if (graphState.status !== "connected" || !normalized.questionDate) return null;
+  try {
+    const quotedDate = quoteCypher(normalized.questionDate);
+    const payload = await hydraQuery(
+      `MATCH (s:BenchmarkSession)-[:CONTAINS]->(t:BenchmarkTurn) WHERE s.occurred_at <= ${quotedDate} RETURN t.source_session_id AS sessionId, t.external_id AS turnExternalId, s.occurred_at AS occurredAt ORDER BY s.occurred_at DESC LIMIT 500`,
+    );
+    const rows = hydraRows(payload);
+    if (!rows.length) return null;
+    // Build a Set of canonical turn IDs matching the normalized record's session structure.
+    const candidateSet = new Set();
+    for (const row of rows) {
+      for (const session of normalized.sessions) {
+        if (String(session.id) === String(row.sessionId)) {
+          for (const turn of session.turns) candidateSet.add(turn.id);
+        }
+      }
+    }
+    return candidateSet.size > 0 ? candidateSet : null;
+  } catch {
+    return null;
+  }
+}
+
 async function answerLongMemEval(record, { topK = 8, runId = "longmemeval", syncGraph = false } = {}) {
   const normalized = normalizeLongMemEvalRecord(record);
-  const retrieval = retrieveLongMemEvidence(normalized, { topK });
+
+  // Phase 3: attempt HydraDB temporal candidate pool for questions with a date anchor.
+  // Falls back transparently to pure BM25 when the graph is offline.
+  const candidateFilter = await hydraTemporalCandidates(normalized);
+  const retrievalMode = candidateFilter ? "hydradb-temporal" : "bm25-local";
+
+  const retrieval = retrieveLongMemEvidence(normalized, { topK, candidateFilter, retrievalMode });
   let answer = "I don't know.";
   let abstained = true;
   let reader = "deterministic-abstention";
@@ -503,6 +547,7 @@ async function answerLongMemEval(record, { topK = 8, runId = "longmemeval", sync
     retrieval: {
       totalTurns: retrieval.totalTurns,
       queryTerms: retrieval.queryTerms,
+      retrievalMode: retrieval.retrievalMode,
       evidence: retrieval.evidence.map(({ content, ...item }) => ({ ...item, excerpt: content.slice(0, 900) })),
     },
     graph,
@@ -663,6 +708,55 @@ const server = createServer(async (request, response) => {
       memory = freshMemory();
       graphState = { status: "not-configured", lastSyncAt: null, message: "Demo memory reset. Sync when the graph node is ready." };
       return json(response, 200, dashboardSnapshot(), request);
+    }
+    if (request.method === "GET" && url.pathname === "/api/benchmark/status") {
+      if (!requireRole(request, response, "reader")) return;
+      try {
+        const runDir = path.join(root, "runs", "longmemeval");
+        // Find the most recently modified evidence file.
+        let latestEvidence = null;
+        let latestMtime = 0;
+        if (existsSync(runDir)) {
+          const { readdir } = await import("node:fs/promises");
+          for (const name of await readdir(runDir)) {
+            if (!name.endsWith("-evidence.jsonl")) continue;
+            const filePath = path.join(runDir, name);
+            const details = await stat(filePath).catch(() => null);
+            if (details && details.mtimeMs > latestMtime) { latestMtime = details.mtimeMs; latestEvidence = filePath; }
+          }
+        }
+        if (!latestEvidence) return json(response, 200, { available: false, message: "No benchmark run found in runs/longmemeval/." }, request);
+        const lines = (await readFile(latestEvidence, "utf8")).split(/\r?\n/).filter(Boolean);
+        let total = 0, goldHits = 0, abstentionQs = 0, correctAbstentions = 0, overAbstentions = 0, hydradbCount = 0;
+        const readerCounts = {};
+        for (const line of lines) {
+          try {
+            const item = JSON.parse(line);
+            total += 1;
+            if (item.retrieved_gold_evidence) goldHits += 1;
+            if (item.retrieval_mode === "hydradb-temporal") hydradbCount += 1;
+            const r = item.reader || "unknown";
+            readerCounts[r] = (readerCounts[r] || 0) + 1;
+            const isAbstQ = String(item.question_id).endsWith("_abs");
+            const answered = item.abstained === false || (!item.abstained && !/i don't know/i.test(String(item.hypothesis || "")));
+            if (isAbstQ) { abstentionQs += 1; if (!answered) correctAbstentions += 1; }
+            else if (!answered) overAbstentions += 1;
+          } catch { /* skip */ }
+        }
+        const answerableTotal = total - abstentionQs;
+        return json(response, 200, {
+          available: true,
+          runFile: path.basename(latestEvidence),
+          total,
+          recallAtK: answerableTotal ? Number((goldHits / answerableTotal).toFixed(4)) : null,
+          abstentionRate: abstentionQs ? Number((correctAbstentions / abstentionQs).toFixed(4)) : null,
+          overAbstentionRate: answerableTotal ? Number((overAbstentions / answerableTotal).toFixed(4)) : null,
+          hydradbRetrievalRate: total ? Number((hydradbCount / total).toFixed(4)) : null,
+          readerBreakdown: readerCounts,
+        }, request);
+      } catch (err) {
+        return json(response, 500, { error: "Could not read benchmark status." }, request);
+      }
     }
     if (request.method === "POST" && url.pathname === "/api/benchmark/longmemeval") {
       const requestedGraphSync = url.searchParams.get("syncGraph") === "true";

@@ -112,9 +112,11 @@ async function loadResumeState(outputPath, evidencePath) {
         questionId: String(item.question_id),
         questionType: item.question_type,
         hypothesis: item.hypothesis,
+        abstained: typeof item.abstained === "boolean" ? item.abstained : undefined,
         latencyMs: item.latency_ms,
         isAbstention: String(item.question_id).endsWith("_abs"),
         retrievedGoldEvidence: Boolean(item.retrieved_gold_evidence),
+        retrievalMode: item.retrieval_mode || "bm25-local",
       });
     } catch { /* skip malformed */ }
   }
@@ -223,9 +225,11 @@ async function run() {
       questionId: normalized.questionId,
       questionType: normalized.questionType,
       hypothesis: reader.hypothesis,
+      abstained: typeof reader.abstained === "boolean" ? reader.abstained : undefined,
       latencyMs: reader.latencyMs,
       isAbstention: normalized.questionId.endsWith("_abs"),
       retrievedGoldEvidence: goldEvidenceHit(record, evidence),
+      retrievalMode: reader.retrieval?.retrievalMode || "bm25-local",
     };
     summaryRows.push(summaryRow);
     const predictionLine = JSON.stringify({ question_id: normalized.questionId, hypothesis: reader.hypothesis });
@@ -237,12 +241,13 @@ async function run() {
       abstained: Boolean(reader.abstained),
       hypothesis: reader.hypothesis,
       retrieved_gold_evidence: summaryRow.retrievedGoldEvidence,
+      retrieval_mode: reader.retrieval?.retrievalMode || "bm25-local",
       graph: reader.graph,
       evidence,
     });
     await appendFile(outputTarget, `${predictionLine}\n`, "utf8");
     await appendFile(evidenceTarget, `${evidenceLine}\n`, "utf8");
-    console.log(`[${index + 1}/${records.length}] ${normalized.questionId} · ${reader.latencyMs} ms · ${evidence.length} evidence turns`);
+    console.log(`[${index + 1}/${records.length}] ${normalized.questionId} · ${reader.latencyMs} ms · ${evidence.length} evidence turns · ${reader.retrieval?.retrievalMode || "bm25-local"}`);
   }
 
   const metrics = buildLongMemEvalMetrics(summaryRows, options.topK);

@@ -35,6 +35,7 @@
           <a class="nav-item active" href="#recall"><span class="nav-glyph">⌘</span> Recall <small>R</small></a>
           <a class="nav-item" href="#timeline"><span class="nav-glyph">◷</span> Timeline <small id="sessionCount">08</small></a>
           <a class="nav-item" href="#graph"><span class="nav-glyph">◌</span> Proof graph <small id="claimCount">08</small></a>
+          <a class="nav-item" href="#benchmark"><span class="nav-glyph">⊞</span> Benchmark <small id="benchNavCount">—</small></a>
         </nav>
 
         <div class="sidebar-spacer"></div>
@@ -140,6 +141,28 @@
             </svg>
             <div class="graph-ping p1"></div><div class="graph-ping p2"></div><div class="graph-ping p3"></div>
           </div>
+        </section>
+
+        <section class="bench-section" id="benchmark" aria-labelledby="benchHeading">
+          <div class="section-heading">
+            <div><p class="eyebrow">// LIVE BENCHMARK</p><h2 id="benchHeading">LongMemEval-S · 500 questions.</h2></div>
+            <span class="timeline-note" id="benchRunLabel">Awaiting run data…</span>
+          </div>
+          <div class="bench-grid" id="benchGrid">
+            <article class="bench-stat" id="benchTotal">
+              <span class="bench-value">—</span><span>Questions processed</span>
+            </article>
+            <article class="bench-stat" id="benchRecall">
+              <span class="bench-value">—</span><span>Recall@8 (BM25)</span>
+            </article>
+            <article class="bench-stat" id="benchAbstention">
+              <span class="bench-value">—</span><span>Abstention rate</span>
+            </article>
+            <article class="bench-stat" id="benchHydra">
+              <span class="bench-value orange" id="benchHydraValue">—</span><span>HydraDB temporal retrieval</span>
+            </article>
+          </div>
+          <div class="bench-reader" id="benchReader"></div>
         </section>
       </main>
     </div>

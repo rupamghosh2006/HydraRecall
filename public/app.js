@@ -259,6 +259,50 @@ function setupEvents() {
   });
 }
 
+function pct(value) {
+  if (value == null) return "—";
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function renderBenchmark(status) {
+  if (!status.available) {
+    $("#benchRunLabel").textContent = status.message || "No run data found.";
+    return;
+  }
+  $("#benchRunLabel").textContent = status.runFile || "";
+  $("#benchNavCount").textContent = status.total ?? "—";
+
+  const totalEl = $("#benchTotal");
+  totalEl.querySelector(".bench-value").textContent = status.total ?? "—";
+
+  const recallEl = $("#benchRecall");
+  recallEl.querySelector(".bench-value").textContent = pct(status.recallAtK);
+
+  const abstEl = $("#benchAbstention");
+  abstEl.querySelector(".bench-value").textContent = pct(status.abstentionRate);
+
+  const hydraEl = $("#benchHydraValue");
+  hydraEl.textContent = pct(status.hydradbRetrievalRate);
+
+  const readerEl = $("#benchReader");
+  readerEl.replaceChildren();
+  if (status.readerBreakdown) {
+    for (const [reader, count] of Object.entries(status.readerBreakdown)) {
+      const pill = document.createElement("span");
+      pill.className = `bench-pill ${reader === "gemini-grounded-reader" ? "active" : reader === "error" ? "error" : ""}` ;
+      pill.textContent = `${reader}: ${count}`;
+      readerEl.append(pill);
+    }
+  }
+}
+
+async function loadBenchmark() {
+  try {
+    const status = await api("/api/benchmark/status");
+    renderBenchmark(status);
+  } catch { /* benchmark data is optional — don't show error */ }
+}
+
 async function boot() {
   setupEvents();
   try {
@@ -273,6 +317,8 @@ async function boot() {
   }
   await loadDashboard();
   await runQuery($("#questionInput").value);
+  await loadBenchmark();
+  setInterval(loadBenchmark, 30_000);
 }
 
 boot();
