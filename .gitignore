@@ -1,0 +1,5 @@
+.env
+.hydradb/
+node_modules/
+coverage/
+.DS_Store

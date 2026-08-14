@@ -1,0 +1,43 @@
+services:
+  hydradb:
+    image: ghcr.io/hydra-db/hydradb:latest
+    container_name: hydrarecall-graph
+    environment:
+      CLOUD_PROVIDER: local
+      LOCAL_PATH: /data/store
+      GRAPH_NAMESPACE: ${HYDRADB_NAMESPACE:-hydrarecall}
+      GRAPH_ID: ${HYDRADB_GRAPH_ID:-hydrarecall}
+      GRAPH_CELL_ID: cell-0
+      GRAPH_CELLS: cell-0
+      GRAPH_NODE_ID: node-0
+      GRAPH_BOLT_NODE_ADDRESSES: node-0=hydradb:7687
+      GRAPH_ADVERTISED_BOLT_ADDR: hydradb:7687
+      GRAPH_DATA_CACHE_DIR: /data/cache
+      GRAPH_AUTH_TOKEN_FILE: /data/auth-token
+      GRAPH_ALLOW_PLAINTEXT: "true"
+      RUST_MIN_STACK: "33554432"
+    volumes:
+      - ./.hydradb:/data
+    ports:
+      - "7687:7687"
+      - "8443:8443"
+      - "9090:9090"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hydrarecall-app
+    depends_on:
+      - hydradb
+    environment:
+      PORT: 3000
+      HYDRADB_HTTP_URL: http://hydradb:8443
+      HYDRADB_AUTH_TOKEN: ${HYDRADB_AUTH_TOKEN}
+      HYDRADB_GRAPH_ID: ${HYDRADB_GRAPH_ID:-hydrarecall}
+      HYDRADB_NAMESPACE: ${HYDRADB_NAMESPACE:-hydrarecall}
+      HYDRADB_CELL_ID: cell-0
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-20b}
+    ports:
+      - "3000:3000"

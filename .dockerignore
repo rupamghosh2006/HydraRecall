@@ -1,0 +1,6 @@
+.git
+.hydradb
+.env
+node_modules
+vendor
+README.md

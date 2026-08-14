@@ -1,0 +1,217 @@
+{
+  "person": {
+    "id": "alex-chen",
+    "name": "Alex Chen",
+    "role": "Staff engineer"
+  },
+  "sessions": [
+    {
+      "id": "s-01",
+      "number": 1,
+      "occurredAt": "2026-01-12T09:12:00Z",
+      "title": "Release architecture kickoff",
+      "turns": [
+        {
+          "id": "t-01",
+          "role": "user",
+          "text": "For the first release, let's deploy directly to production after the CI suite passes. We need speed more than ceremony.",
+          "claims": ["c-01"]
+        }
+      ]
+    },
+    {
+      "id": "s-02",
+      "number": 2,
+      "occurredAt": "2026-01-27T16:04:00Z",
+      "title": "Database decision",
+      "turns": [
+        {
+          "id": "t-02",
+          "role": "user",
+          "text": "The product data is relational. PostgreSQL is our source of truth; do not introduce MongoDB for the app database.",
+          "claims": ["c-02"]
+        }
+      ]
+    },
+    {
+      "id": "s-03",
+      "number": 3,
+      "occurredAt": "2026-02-16T11:30:00Z",
+      "title": "Incident 128 review",
+      "turns": [
+        {
+          "id": "t-03",
+          "role": "user",
+          "text": "The direct release made the payment outage harder to contain. From now on, use a 10% canary before full production rollout.",
+          "claims": ["c-03"]
+        }
+      ]
+    },
+    {
+      "id": "s-04",
+      "number": 4,
+      "occurredAt": "2026-03-03T10:18:00Z",
+      "title": "Accessibility feedback",
+      "turns": [
+        {
+          "id": "t-04",
+          "role": "user",
+          "text": "Please keep the dashboard high contrast and avoid low-contrast gray-on-gray controls.",
+          "claims": ["c-04"]
+        }
+      ]
+    },
+    {
+      "id": "s-05",
+      "number": 5,
+      "occurredAt": "2026-03-19T14:41:00Z",
+      "title": "Canary outcome",
+      "turns": [
+        {
+          "id": "t-05",
+          "role": "user",
+          "text": "The canary caught the checkout regression before it affected everybody. Keep it as the default release policy.",
+          "claims": ["c-05"]
+        }
+      ]
+    },
+    {
+      "id": "s-06",
+      "number": 6,
+      "occurredAt": "2026-04-07T08:52:00Z",
+      "title": "Operational revision",
+      "turns": [
+        {
+          "id": "t-06",
+          "role": "user",
+          "text": "High-risk payment changes need a 5% canary, live error-rate monitoring, and an explicit rollback owner. Keep 10% for normal changes.",
+          "claims": ["c-06"]
+        }
+      ]
+    },
+    {
+      "id": "s-07",
+      "number": 7,
+      "occurredAt": "2026-04-22T17:20:00Z",
+      "title": "Preference signal",
+      "turns": [
+        {
+          "id": "t-07",
+          "role": "user",
+          "text": "For planning, concise decisions with linked evidence are more useful to me than long narrative summaries.",
+          "claims": ["c-07"]
+        }
+      ]
+    },
+    {
+      "id": "s-08",
+      "number": 8,
+      "occurredAt": "2026-05-05T12:08:00Z",
+      "title": "Release guardrail confirmation",
+      "turns": [
+        {
+          "id": "t-08",
+          "role": "assistant",
+          "text": "Recorded: high-risk payment releases use a 5% canary, monitored rollout, and an assigned rollback owner.",
+          "claims": ["c-08"]
+        }
+      ]
+    }
+  ],
+  "claims": [
+    {
+      "id": "c-01",
+      "entity": "release-policy",
+      "slot": "deployment-policy",
+      "value": "Deploy directly to production after CI passes.",
+      "validAt": "2026-01-12T09:12:00Z",
+      "recordedAt": "2026-01-12T09:12:00Z",
+      "status": "superseded",
+      "sourceTurnId": "t-01",
+      "confidence": 0.94
+    },
+    {
+      "id": "c-02",
+      "entity": "application-data",
+      "slot": "primary-database",
+      "value": "PostgreSQL is the source of truth for product data.",
+      "validAt": "2026-01-27T16:04:00Z",
+      "recordedAt": "2026-01-27T16:04:00Z",
+      "status": "active",
+      "sourceTurnId": "t-02",
+      "confidence": 0.97
+    },
+    {
+      "id": "c-03",
+      "entity": "release-policy",
+      "slot": "deployment-policy",
+      "value": "Use a 10% canary before production rollout.",
+      "validAt": "2026-02-16T11:30:00Z",
+      "recordedAt": "2026-02-16T11:30:00Z",
+      "status": "superseded",
+      "sourceTurnId": "t-03",
+      "reason": "The payment outage was harder to contain after a direct release.",
+      "supersedes": "c-01",
+      "confidence": 0.98
+    },
+    {
+      "id": "c-04",
+      "entity": "dashboard",
+      "slot": "accessibility-preference",
+      "value": "Use high-contrast UI and avoid low-contrast gray-on-gray controls.",
+      "validAt": "2026-03-03T10:18:00Z",
+      "recordedAt": "2026-03-03T10:18:00Z",
+      "status": "active",
+      "sourceTurnId": "t-04",
+      "confidence": 0.91
+    },
+    {
+      "id": "c-05",
+      "entity": "release-policy",
+      "slot": "deployment-policy",
+      "value": "Use a 10% canary as the default release policy.",
+      "validAt": "2026-03-19T14:41:00Z",
+      "recordedAt": "2026-03-19T14:41:00Z",
+      "status": "superseded",
+      "sourceTurnId": "t-05",
+      "reason": "A canary caught a checkout regression before a full rollout.",
+      "supersedes": "c-03",
+      "confidence": 0.96
+    },
+    {
+      "id": "c-06",
+      "entity": "release-policy",
+      "slot": "deployment-policy",
+      "value": "For high-risk payment changes: 5% canary, live error-rate monitoring, and an explicit rollback owner. Normal changes retain a 10% canary.",
+      "validAt": "2026-04-07T08:52:00Z",
+      "recordedAt": "2026-04-07T08:52:00Z",
+      "status": "active",
+      "sourceTurnId": "t-06",
+      "reason": "Payment changes have a higher blast radius and need tighter containment.",
+      "supersedes": "c-05",
+      "confidence": 0.99
+    },
+    {
+      "id": "c-07",
+      "entity": "alex-chen",
+      "slot": "response-preference",
+      "value": "Prefer concise decisions with linked evidence over long narrative summaries.",
+      "validAt": "2026-04-22T17:20:00Z",
+      "recordedAt": "2026-04-22T17:20:00Z",
+      "status": "active",
+      "sourceTurnId": "t-07",
+      "confidence": 0.93
+    },
+    {
+      "id": "c-08",
+      "entity": "release-policy",
+      "slot": "release-guardrail",
+      "value": "The high-risk payment release guardrail is confirmed.",
+      "validAt": "2026-05-05T12:08:00Z",
+      "recordedAt": "2026-05-05T12:08:00Z",
+      "status": "active",
+      "sourceTurnId": "t-08",
+      "confidence": 0.9
+    }
+  ]
+}

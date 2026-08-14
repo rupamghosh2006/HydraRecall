@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#080808" />
+    <title>HydraRecall — Proof-carrying agent memory</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="noise"></div>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="HydraRecall home">
+          <span class="brand-mark"><img src="/assets/logo.png" alt="" /></span>
+          <span>Hydra<span>Recall</span></span>
+        </a>
+        <div class="topbar-copy"><span class="pulse"></span> Temporal memory engine</div>
+        <div class="topbar-actions">
+          <button class="text-button" id="syncButton" type="button">Sync HydraDB</button>
+          <button class="primary-button compact" id="openIngest" type="button">Ingest session <span>↗</span></button>
+        </div>
+      </header>
+
+      <aside class="sidebar" aria-label="HydraRecall navigation">
+        <div class="workspace-label">Workspace</div>
+        <button class="identity-card active" type="button">
+          <span class="avatar">AC</span>
+          <span><strong>Alex Chen</strong><small>Staff engineer</small></span>
+          <span class="more">•••</span>
+        </button>
+
+        <nav class="nav-list">
+          <a class="nav-item active" href="#recall"><span class="nav-glyph">⌘</span> Recall <small>R</small></a>
+          <a class="nav-item" href="#timeline"><span class="nav-glyph">◷</span> Timeline <small id="sessionCount">08</small></a>
+          <a class="nav-item" href="#graph"><span class="nav-glyph">◌</span> Proof graph <small id="claimCount">08</small></a>
+        </nav>
+
+        <div class="sidebar-spacer"></div>
+        <div class="side-status" id="sideStatus">
+          <span class="status-dot warning"></span>
+          <span><b>DEMO MEMORY</b><small>Awaiting graph sync</small></span>
+        </div>
+        <button class="reset-button" id="resetButton" type="button">↺ Reset workspace</button>
+      </aside>
+
+      <main class="content">
+        <section class="intro" id="recall">
+          <div>
+            <p class="eyebrow">// PROOF-CARRYING MEMORY</p>
+            <h1>Recall the truth.<br /><em>Not the nearest vector.</em></h1>
+          </div>
+          <p class="intro-copy">HydraRecall turns every conversation into a versioned evidence graph. Ask what changed, what was true before, or what was never said.</p>
+        </section>
+
+        <section class="metrics" aria-label="Memory statistics">
+          <article><span class="metric-value" id="metricSessions">08</span><span>Sessions indexed</span></article>
+          <article><span class="metric-value" id="metricClaims">08</span><span>Evidence-backed claims</span></article>
+          <article><span class="metric-value orange" id="metricVersions">03</span><span>Resolved state changes</span></article>
+          <article><span class="metric-value" id="metricGraph">—</span><span>Graph status</span></article>
+        </section>
+
+        <section class="query-section" aria-labelledby="queryLabel">
+          <div class="section-heading">
+            <div><p class="eyebrow" id="queryLabel">// ASK THE MEMORY</p><h2>Evidence first. Answer second.</h2></div>
+            <p class="query-hint"><kbd>⌘</kbd> <kbd>Enter</kbd> to recall</p>
+          </div>
+          <form id="queryForm" class="query-box">
+            <div class="query-prompt">›_</div>
+            <input id="questionInput" aria-label="Ask the memory a question" autocomplete="off" value="What is Alex's current deployment policy?" />
+            <button class="primary-button" type="submit">Recall <span>↗</span></button>
+          </form>
+          <div class="question-chips" aria-label="Example questions">
+            <button type="button" data-question="What is Alex's current deployment policy?">Current state</button>
+            <button type="button" data-question="What was the deployment policy before April 2026?">Time travel</button>
+            <button type="button" data-question="When did the deployment policy change?">Change history</button>
+            <button type="button" data-question="What is Alex's favorite JavaScript framework?">Safe abstention</button>
+          </div>
+        </section>
+
+        <section class="result-grid" aria-live="polite">
+          <article class="answer-panel" id="answerPanel">
+            <div class="panel-topline">
+              <span class="answer-state grounded" id="answerState"><i></i> GROUNDED</span>
+              <span class="latency" id="latency">— ms retrieval</span>
+            </div>
+            <h3 id="answerTitle">Ask a question to inspect the proof.</h3>
+            <p class="answer-copy" id="answerCopy">HydraRecall will retrieve a time-aware evidence path, then answer only from the supplied proof.</p>
+            <p class="answer-detail" id="answerDetail"></p>
+            <div class="coverage-row" id="coverageRow"><span>Coverage</span><strong>—</strong></div>
+          </article>
+
+          <article class="proof-panel" id="proofPanel">
+            <div class="panel-topline"><span class="micro-label">PROOF PATH</span><span class="live-label">LIVE</span></div>
+            <ol class="proof-list" id="proofList">
+              <li><span>01</span><p>Entity & slot resolver</p></li>
+              <li><span>02</span><p>Temporal graph traversal</p></li>
+              <li><span>03</span><p>Evidence-bounded generation</p></li>
+            </ol>
+          </article>
+        </section>
+
+        <section class="timeline-section" id="timeline" aria-labelledby="timelineHeading">
+          <div class="section-heading timeline-heading">
+            <div><p class="eyebrow">// VERSION HISTORY</p><h2 id="timelineHeading">Every state stays queryable.</h2></div>
+            <span class="timeline-note">VALID TIME ↔ RECORDED TIME</span>
+          </div>
+          <div class="timeline" id="timelineList">
+            <div class="timeline-empty">Run a recall to inspect the relevant claim sequence.</div>
+          </div>
+        </section>
+
+        <section class="graph-section" id="graph" aria-labelledby="graphHeading">
+          <div class="graph-copy">
+            <p class="eyebrow">// HYDRADB GRAPH VIEW</p>
+            <h2 id="graphHeading">Relationships, not<br />just retrieval.</h2>
+            <p>Claims are append-only. Superseded facts stay attached to the sessions and turns that proved them.</p>
+            <div class="graph-key"><span class="key-node orange-key"></span> active claim <span class="key-node"></span> source evidence <span class="key-line"></span> typed relationship</div>
+          </div>
+          <div class="graph-canvas" aria-label="Temporal proof graph illustration">
+            <svg viewBox="0 0 800 420" role="img" aria-label="Sessions, turns and temporal claims linked in a graph">
+              <defs>
+                <filter id="glow"><feGaussianBlur stdDeviation="3.5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+                <linearGradient id="line" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ff5a1f"/><stop offset="1" stop-color="#747474"/></linearGradient>
+              </defs>
+              <g class="graph-links">
+                <path d="M116 115 C240 105 250 170 347 185"/><path d="M116 115 C250 104 450 88 560 120"/>
+                <path d="M347 185 C420 198 452 260 568 284"/><path d="M560 120 C600 153 614 223 568 284"/>
+                <path class="active-link" d="M347 185 C460 190 545 181 676 160"/>
+                <path d="M568 284 C639 310 692 275 727 236"/>
+              </g>
+              <g class="edge-labels"><text x="212" y="113">CONTAINS</text><text x="440" y="101">SUPPORTS</text><text x="463" y="175">SUPERSEDES</text><text x="625" y="277">VALID_AT</text></g>
+              <g class="node session"><circle cx="105" cy="115" r="34"/><text x="105" y="111">S-06</text><text x="105" y="127">SESSION</text></g>
+              <g class="node turn"><circle cx="347" cy="185" r="41"/><text x="347" y="181">T-06</text><text x="347" y="198">TURN</text></g>
+              <g class="node claim muted"><circle cx="560" cy="120" r="40"/><text x="560" y="116">10%</text><text x="560" y="133">CANARY</text></g>
+              <g class="node claim active"><circle cx="676" cy="160" r="50"/><text x="676" y="155">5%</text><text x="676" y="173">CANARY</text></g>
+              <g class="node reason"><circle cx="568" cy="284" r="36"/><text x="568" y="280">RISK</text><text x="568" y="297">EVENT</text></g>
+              <g class="node time"><circle cx="727" cy="236" r="27"/><text x="727" y="240">NOW</text></g>
+            </svg>
+            <div class="graph-ping p1"></div><div class="graph-ping p2"></div><div class="graph-ping p3"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="ingest-dialog" id="ingestDialog">
+      <form id="ingestForm" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">// NEW MEMORY EVENT</p><h2>Commit a fact.<br />Keep its proof.</h2></div><button class="close-dialog" value="cancel" aria-label="Close">×</button></div>
+        <label>Session title<input id="ingestTitle" maxlength="100" placeholder="e.g. Production review" /></label>
+        <label>When did this become true?<input id="ingestDate" type="datetime-local" /></label>
+        <label>Conversation evidence<textarea id="ingestText" minlength="8" placeholder="e.g. High-risk payment releases now use a 2% canary..." required></textarea></label>
+        <p class="ingest-note">With a Groq key, claims are extracted automatically. Without it, HydraRecall stores the evidence deterministically and never fabricates missing fields.</p>
+        <button class="primary-button full" type="submit">Ingest to memory <span>↗</span></button>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
