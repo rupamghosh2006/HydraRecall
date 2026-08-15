@@ -5,7 +5,7 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAuth } from "./lib/security.mjs";
-import { buildLongMemEvalReaderPrompt, normalizeLongMemEvalRecord, retrieveLongMemEvidence, normalizeLongMemEvalV2Record, buildLongMemEvalV2ReaderPrompt } from "./lib/longmemeval.mjs";
+import { buildLongMemEvalReaderPrompt, normalizeLongMemEvalRecord, retrieveLongMemEvidence, normalizeLongMemEvalV2Record, buildLongMemEvalV2ReaderPrompt, normalizeBeamRecord, buildBeamReaderPrompt } from "./lib/longmemeval.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, "public");
