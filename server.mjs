@@ -597,6 +597,52 @@ async function answerLongMemEvalV2(record, { topK = 8, runId = "longmemeval-v2",
   };
 }
 
+async function answerBeam(record, { topK = 8, runId = "beam", syncGraph = false } = {}) {
+  const normalized = normalizeBeamRecord(record);
+  const retrievalMode = "bm25-local";
+  const retrieval = retrieveLongMemEvidence(normalized, { topK, candidateFilter: null, retrievalMode });
+  
+  let answer = "I don't know.";
+  let abstained = true;
+  let reader = "deterministic-abstention";
+  let reasoning = "";
+
+  if (config.benchmarkReaderMode !== "deterministic" && config.geminiKey && retrieval.evidence.length) {
+    try {
+      const body = await geminiJsonCompletion({
+        system: "You are a rigorous reader model evaluating multi-hop agent memory.",
+        user: buildBeamReaderPrompt(normalized, retrieval.evidence),
+        maxTokens: 1000,
+      });
+      const parsed = JSON.parse(geminiText(body) || "{}");
+      if (typeof parsed.answer === "string" && parsed.answer.trim()) {
+        answer = parsed.answer.trim().slice(0, 4_000);
+        abstained = Boolean(parsed.abstained);
+        reasoning = parsed.reasoning || "";
+        reader = "gemini-grounded-reader";
+      }
+    } catch (error) {
+      if (error instanceof GeminiRateLimitError) throw error;
+      reader = "deterministic-fallback";
+    }
+  }
+
+  const graph = syncGraph ? await syncBenchmarkEvidence(runId, normalized.questionId, normalized.question, retrieval.evidence) : { status: "not-requested" };
+  return {
+    hypothesis: abstained ? "I don't know." : answer,
+    abstained,
+    reasoning,
+    reader,
+    retrieval: {
+      totalTurns: retrieval.totalTurns,
+      queryTerms: retrieval.queryTerms,
+      retrievalMode: retrieval.retrievalMode,
+      evidence: retrieval.evidence.map(({ content, ...item }) => ({ ...item, excerpt: content.slice(0, 900) })),
+    },
+    graph,
+  };
+}
+
 async function syncBenchmarkEvidence(runId, questionId, question, evidence) {
   const availability = await checkHydra();
   if (!availability.connected) return { status: "offline", message: availability.message, proofs: 0 };
