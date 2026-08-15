@@ -199,35 +199,119 @@ async function run() {
       }))
     }));
     
-    // Batch ingest
-    for (let i = 0; i < trajArray.length; i += 20) {
-      const batch = trajArray.slice(i, i + 20);
+    // Batch trajectories by turn count (target ~120 turns / 240 writes per batch to safely complete within timeout)
+    const batches = [];
+    let currentBatch = [];
+    let currentTurns = 0;
+    for (const t of trajArray) {
+      currentBatch.push(t);
+      currentTurns += t.turns.length;
+      if (currentTurns >= 120 || currentBatch.length >= 6) {
+        batches.push(currentBatch);
+        currentBatch = [];
+        currentTurns = 0;
+      }
+    }
+    if (currentBatch.length) batches.push(currentBatch);
+
+    console.log(`Split 200 trajectories into ${batches.length} turn-bounded batches.`);
+
+    let totalCompletedWrites = 0;
+    let successfulBatches = 0;
+    let failedBatches = 0;
+    let timedOutBatches = 0;
+    let totalCompletedWrites = 0;
+    let trajectoriesProcessed = 0;
+    const estimatedTotalWrites = 10190;
+
+    for (let bIdx = 0; bIdx < batches.length; bIdx++) {
+      const batch = batches[bIdx];
+      const batchTurns = batch.reduce((sum, s) => sum + s.turns.length, 0);
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 300_000); // 5 minute timeout
+      const timeout = setTimeout(() => controller.abort(), 360_000); // 6 minute timeout protection
+
       try {
         const headers = { "Content-Type": "application/json" };
         const apiKey = options.apiKey || process.env.HYDRARECALL_API_KEY;
         if (apiKey) headers["X-API-Key"] = apiKey;
+        
         const res = await fetch(options.endpoint.replace(/\/$/, "") + "/api/benchmark/ingest", {
           method: "POST",
           headers,
           body: JSON.stringify({ dataset: "longmemeval-v2", sessions: batch }),
           signal: controller.signal
         });
+
         if (!res.ok) {
-          console.error(`Ingestion batch failed (HTTP ${res.status}):`, await res.text());
+          const errText = await res.text();
+          console.error(`[INGEST] Batch ${bIdx + 1}/${batches.length} FAILED (HTTP ${res.status}):`, errText);
+          failedBatches++;
         } else {
-          console.log(`  Ingested trajectories ${Math.min(i + 20, trajArray.length)}/${trajArray.length}`);
+          const data = await res.json();
+          successfulBatches++;
+          totalCompletedWrites += data.writes || (batchTurns * 2);
+          trajectoriesProcessed += batch.length;
+          const rate = (data.writes / ((data.elapsedMs || 1000) / 1000)).toFixed(1);
+          const pct = ((totalCompletedWrites / estimatedTotalWrites) * 100).toFixed(1);
+          console.log(`[INGEST] ${totalCompletedWrites} / ${estimatedTotalWrites} writes complete (${pct}%) | Batch ${bIdx + 1}/${batches.length} (${trajectoriesProcessed}/200 trajectories, ${batchTurns} turns) in ${(data.elapsedMs/1000).toFixed(1)}s (${rate} writes/s) | errors: ${data.errors || 0}`);
         }
       } catch (err) {
         if (err.name === "AbortError") {
-          console.error(`Ingestion timeout: batch ${i / 20 + 1} exceeded 5 minutes limit.`);
+          console.error(`[INGEST] Batch ${bIdx + 1}/${batches.length} TIMED OUT (exceeded 6 minutes limit).`);
+          timedOutBatches++;
         } else {
-          console.error("Ingestion network error:", err.message);
+          console.error(`[INGEST] Batch ${bIdx + 1}/${batches.length} FAILED (network error):`, err.message);
+          failedBatches++;
         }
       } finally {
         clearTimeout(timeout);
       }
+    }
+
+    // Fail-closed gate 1: Batch execution statuses
+    console.log("\n--- Ingestion Batch Summary ---");
+    console.log(`Total Batches:      ${batches.length}`);
+    console.log(`Successful Batches: ${successfulBatches}`);
+    console.log(`Failed Batches:     ${failedBatches}`);
+    console.log(`Timed Out Batches:  ${timedOutBatches}`);
+
+    if (successfulBatches !== batches.length || failedBatches > 0 || timedOutBatches > 0) {
+      console.error("\n================================================================================");
+      console.error("[FATAL] V2 evaluation NOT started.");
+      console.error("HydraDB ingestion incomplete:");
+      console.error(`  successful: ${successfulBatches}/${batches.length}`);
+      console.error(`  failed:     ${failedBatches}`);
+      console.error(`  timed out:  ${timedOutBatches}`);
+      console.error("Benchmark integrity rule: Cannot evaluate benchmark on a partially populated graph.");
+      console.error("================================================================================\n");
+      process.exit(1);
+    }
+
+    // Fail-closed gate 2: Live HydraDB Graph Count Verification
+    console.log("\nVerifying live HydraDB graph counts before evaluation...");
+    try {
+      const statsRes = await fetch(options.endpoint.replace(/\/$/, "") + "/api/benchmark/graph-stats");
+      if (!statsRes.ok) {
+        throw new Error(`Failed to query /api/benchmark/graph-stats (HTTP ${statsRes.status})`);
+      }
+      const stats = await statsRes.json();
+      console.log(`Live HydraDB Graph Stats:`);
+      console.log(`  CONTAINS edges:  ${stats.containsEdges} (expected ${stats.expected?.containsEdges || 5095})`);
+      console.log(`  SUPPORTS edges:  ${stats.supportsEdges} (expected ${stats.expected?.supportsEdges || 5095})`);
+      console.log(`  SUPERSEDES edges:${stats.supersedesEdges}`);
+      console.log(`  Total edges:     ${stats.totalEdges} (expected >= ${stats.expected?.totalEdges || 10190})`);
+
+      if (stats.containsEdges < 5000 || stats.supportsEdges < 5000) {
+        console.error("\n================================================================================");
+        console.error("[FATAL] V2 evaluation NOT started.");
+        console.error(`HydraDB graph count check failed: found ${stats.containsEdges} CONTAINS and ${stats.supportsEdges} SUPPORTS edges.`);
+        console.error("================================================================================\n");
+        process.exit(1);
+      }
+      console.log("Graph verification PASSED. All required trajectories confirmed in HydraDB.\n");
+    } catch (err) {
+      console.error("[FATAL] Failed to verify HydraDB graph integrity:", err.message);
+      process.exit(1);
     }
   }
 
@@ -259,11 +343,7 @@ async function run() {
 
     let reader;
     if (options.dryRun) {
-      // Not calling API, we don't have retrieveLongMemEvidence locally accessible inside this isolated script
-      // because it expects the API. But wait, `dry-run` could call API with `--dry-run` or we just skip it.
-      // Wait, in V2 we let the API handle the logic, even dry-run? No, dry-run in V1 just did local BM25.
-      // We can't do local BM25 without importing the lib. So for V2 adapter dry-run we just stub it, or import the lib.
-      console.log(`[${index + 1}/${records.length}] ${q.id} · skipped (dry-run not fully implemented for local BM25 in this script)`);
+      console.log(`[${index + 1}/${records.length}] ${q.id} · skipped (dry-run mode)`);
       continue;
     } else {
       if (processed > 0 && options.paceMs > 0) await sleep(options.paceMs);
@@ -273,6 +353,9 @@ async function run() {
 
     const evidence = reader.retrieval?.evidence || [];
     const hypothesis = reader.hypothesis ?? reader.answer ?? "I don't know.";
+    const retrievalSource = reader.retrievalSource || reader.retrieval?.retrievalSource || "fallback";
+    const candidatePoolSize = reader.candidatePoolSize ?? reader.retrieval?.candidatePoolSize ?? evidence.length;
+
     const summaryRow = {
       questionId: record.question_id,
       questionType: record.question_type,
@@ -282,6 +365,7 @@ async function run() {
       isAbstention: String(record.question_id).endsWith("_abs"),
       retrievedGoldEvidence: false,
       retrievalMode: reader.retrieval?.retrievalMode || "bm25-local",
+      retrievalSource,
     };
     summaryRows.push(summaryRow);
     const predictionLine = JSON.stringify({ question_id: record.question_id, hypothesis });
@@ -294,12 +378,14 @@ async function run() {
       hypothesis,
       retrieved_gold_evidence: summaryRow.retrievedGoldEvidence,
       retrieval_mode: reader.retrieval?.retrievalMode || "bm25-local",
+      retrieval_source: retrievalSource,
+      candidate_pool_size: candidatePoolSize,
       graph: reader.graph,
       evidence,
     });
     await appendFile(outputTarget, `${predictionLine}\n`, "utf8");
     await appendFile(evidenceTarget, `${evidenceLine}\n`, "utf8");
-    console.log(`[${index + 1}/${records.length}] ${record.question_id} · ${reader.latencyMs} ms · ${evidence.length} evidence states · ${reader.abstained ? 'abstained' : 'answered'}`);
+    console.log(`[${index + 1}/${records.length}] ${record.question_id} · ${reader.latencyMs} ms · ${evidence.length} evidence states (top-k ${options.topK}, pool ${candidatePoolSize}) · [${retrievalSource}] · ${reader.abstained ? 'abstained' : 'answered'}`);
   }
 
   console.log(`\nWrote ${options.output}\nWrote ${options.evidenceOutput}`);

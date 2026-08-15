@@ -251,7 +251,7 @@ async function answerQuestion(question) {
 async function hydraQuery(query) {
   if (!config.hydraToken) throw new Error("HYDRADB_AUTH_TOKEN is not configured.");
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 6_000);
+  const timeout = setTimeout(() => controller.abort(), 45_000); // 45s timeout for heavy write flushes
   try {
     const response = await fetch(`${config.hydraUrl}/v1/graphs/${encodeURIComponent(config.graphId)}/query`, {
       method: "POST",
@@ -554,6 +554,39 @@ async function answerLongMemEval(record, { topK = 8, runId = "longmemeval", sync
   };
 }
 
+async function getBenchmarkGraphStats() {
+  const availability = await checkHydra();
+  if (!availability.connected) return { connected: false, message: availability.message };
+
+  try {
+    const containsRes = await hydraQuery(`MATCH (s:BenchmarkSession)-[:CONTAINS]->(t:BenchmarkTurn) RETURN count(*) AS contains_count`);
+    const supportsRes = await hydraQuery(`MATCH (t:BenchmarkTurn)-[:SUPPORTS]->(c:BenchmarkClaim) RETURN count(*) AS supports_count`);
+    const supersedesRes = await hydraQuery(`MATCH (c1:BenchmarkClaim)-[:SUPERSEDES]->(c2:BenchmarkClaim) RETURN count(*) AS supersedes_count`);
+
+    const containsEdges = Number(containsRes?.rows?.[0]?.[0]?.value ?? 0);
+    const supportsEdges = Number(supportsRes?.rows?.[0]?.[0]?.value ?? 0);
+    const supersedesEdges = Number(supersedesRes?.rows?.[0]?.[0]?.value ?? 0);
+
+    return {
+      connected: true,
+      containsEdges,
+      supportsEdges,
+      supersedesEdges,
+      totalEdges: containsEdges + supportsEdges + supersedesEdges,
+      expected: {
+        sessions: 200,
+        turns: 5095,
+        claims: 5095,
+        containsEdges: 5095,
+        supportsEdges: 5095,
+        totalEdges: 10190
+      }
+    };
+  } catch (err) {
+    return { connected: false, error: err.message };
+  }
+}
+
 async function answerLongMemEvalV2(record, { topK = 8, runId = "longmemeval-v2", syncGraph = false } = {}) {
   const normalized = normalizeLongMemEvalV2Record(record);
   
@@ -562,6 +595,8 @@ async function answerLongMemEvalV2(record, { topK = 8, runId = "longmemeval-v2",
   const retrieval = retrieveLongMemEvidence(normalized, { topK: 40, candidateFilter: null, retrievalMode });
   
   let finalEvidence = retrieval.evidence.slice(0, topK);
+  let retrievalSource = "fallback";
+  let graphProofAvailable = false;
   
   // 2. If HydraDB is online, apply temporal graph resolution using stored turn metadata
   const availability = await checkHydra();
@@ -578,21 +613,24 @@ async function answerLongMemEvalV2(record, { topK = 8, runId = "longmemeval-v2",
         if (claimsRes.rows) allClaims.push(...claimsRes.rows);
       }
 
-      // No supersedes edges yet (ingestion doesn't create them), so just use stored claims
-      // to validate that the retrieved turn ids are actually in HydraDB
       const storedTurnIds = new Set(allClaims.map(c => String(c.turn_node_id)));
       
       if (storedTurnIds.size > 0) {
+        graphProofAvailable = true;
         const filtered = retrieval.evidence.filter(e => {
           const turnId = graphNodeId("benchmark-turn", `${e.sessionId}:${e.turnIndex}`);
           return storedTurnIds.has(String(turnId));
         });
         if (filtered.length > 0) {
           finalEvidence = filtered.slice(0, topK);
+          retrievalSource = filtered.length >= topK ? "graph-backed" : "mixed";
+        } else {
+          retrievalSource = "fallback";
         }
       }
     } catch (e) {
       console.error("HydraDB temporal graph resolution failed, falling back to BM25", e);
+      retrievalSource = "fallback";
     }
   }
 
@@ -621,17 +659,21 @@ async function answerLongMemEvalV2(record, { topK = 8, runId = "longmemeval-v2",
     }
   }
 
-  const graph = syncGraph ? await syncBenchmarkEvidence(runId, normalized.questionId, normalized.question, retrieval.evidence) : { status: "not-requested" };
+  const graph = syncGraph ? await syncBenchmarkEvidence(runId, normalized.questionId, normalized.question, finalEvidence) : { status: "not-requested" };
   return {
     hypothesis: abstained ? "I don't know." : answer,
     abstained,
     reasoning,
     reader,
+    retrievalSource,
+    topK,
+    candidatePoolSize: retrieval.evidence.length,
     retrieval: {
       totalTurns: retrieval.totalTurns,
       queryTerms: retrieval.queryTerms,
       retrievalMode: retrieval.retrievalMode,
-      evidence: retrieval.evidence.map(({ content, ...item }) => ({ ...item, excerpt: content.slice(0, 900) })),
+      retrievalSource,
+      evidence: finalEvidence.map(({ content, ...item }) => ({ ...item, excerpt: content.slice(0, 900) })),
     },
     graph,
   };
@@ -734,21 +776,50 @@ async function syncBenchmarkIngestion(dataset, sessions) {
     }
   }
 
-  // Execute all graph writes concurrently with a controlled worker pool of 30
-  const CONCURRENCY = 30;
-  for (let i = 0; i < allWrites.length; i += CONCURRENCY) {
-    const chunk = allWrites.slice(i, i + CONCURRENCY);
-    await Promise.all(chunk.map((query) => hydraQuery(query).catch(() => null)));
+  // Execute all graph writes concurrently with a controlled worker pool of 25
+  const CONCURRENCY = 25;
+  let completedWrites = 0;
+  let errors = 0;
+  let active = 0;
+  let index = 0;
+
+  async function worker() {
+    while (index < allWrites.length) {
+      const qIdx = index++;
+      if (qIdx >= allWrites.length) break;
+      active++;
+      try {
+        await hydraQuery(allWrites[qIdx]);
+        completedWrites++;
+      } catch (err) {
+        errors++;
+        console.error(`[INGEST ERROR] ${err.message}`);
+      } finally {
+        active--;
+      }
+
+      if (completedWrites % 25 === 0 || completedWrites === allWrites.length) {
+        const currentElapsed = (performance.now() - started) / 1000;
+        const rate = (completedWrites / (currentElapsed || 1)).toFixed(1);
+        const pct = ((completedWrites / (allWrites.length || 1)) * 100).toFixed(1);
+        console.log(`[INGEST] ${completedWrites} / ${allWrites.length} writes complete (${pct}%) · ${rate} writes/sec · active: ${active} · errors: ${errors}`);
+      }
+    }
   }
 
+  const workers = Array.from({ length: Math.min(CONCURRENCY, allWrites.length) }, () => worker());
+  await Promise.all(workers);
+
   const elapsedMs = Math.round(performance.now() - started);
-  console.log(`[INGEST] Ingested ${sessions.length} sessions (${totalClaims} claims, ${allWrites.length} edges) in ${elapsedMs}ms`);
+  console.log(`[INGEST COMPLETE] ${sessions.length} sessions (${totalClaims} claims, ${completedWrites}/${allWrites.length} edges) in ${elapsedMs}ms`);
 
   return {
-    status: "success",
+    status: errors === 0 ? "success" : "partial",
     sessions: sessions.length,
     claims: totalClaims,
     edges: allWrites.length,
+    writes: completedWrites,
+    errors,
     elapsedMs
   };
 }
@@ -958,6 +1029,11 @@ const server = createServer(async (request, response) => {
       } catch (err) {
         return json(response, 500, { error: "Could not read benchmark status." }, request);
       }
+    }
+    if (request.method === "GET" && url.pathname === "/api/benchmark/graph-stats") {
+      if (!requireRole(request, response, "reader")) return;
+      const stats = await getBenchmarkGraphStats();
+      return json(response, 200, stats, request);
     }
     if (request.method === "POST" && url.pathname === "/api/benchmark/ingest") {
       if (!requireRole(request, response, "writer")) return;
