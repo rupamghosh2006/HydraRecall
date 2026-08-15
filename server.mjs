@@ -5,7 +5,7 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAuth } from "./lib/security.mjs";
-import { buildLongMemEvalReaderPrompt, normalizeLongMemEvalRecord, retrieveLongMemEvidence } from "./lib/longmemeval.mjs";
+import { buildLongMemEvalReaderPrompt, normalizeLongMemEvalRecord, retrieveLongMemEvidence, normalizeLongMemEvalV2Record, buildLongMemEvalV2ReaderPrompt } from "./lib/longmemeval.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, "public");
@@ -554,6 +554,49 @@ async function answerLongMemEval(record, { topK = 8, runId = "longmemeval", sync
   };
 }
 
+async function answerLongMemEvalV2(record, { topK = 8, runId = "longmemeval-v2", syncGraph = false } = {}) {
+  const normalized = normalizeLongMemEvalV2Record(record);
+  const retrievalMode = "bm25-local";
+  const retrieval = retrieveLongMemEvidence(normalized, { topK, candidateFilter: null, retrievalMode });
+  
+  let answer = "I don't know.";
+  let abstained = true;
+  let reader = "deterministic-abstention";
+
+  if (config.benchmarkReaderMode !== "deterministic" && config.geminiKey && retrieval.evidence.length) {
+    try {
+      const body = await geminiJsonCompletion({
+        system: "You are a rigorous long-term memory reader for web trajectories. Follow the user instructions exactly and return valid JSON only.",
+        user: buildLongMemEvalV2ReaderPrompt(normalized, retrieval.evidence),
+        maxTokens: 900,
+      });
+      const parsed = JSON.parse(geminiText(body) || "{}");
+      if (typeof parsed.answer === "string" && parsed.answer.trim()) {
+        answer = parsed.answer.trim().slice(0, 4_000);
+        abstained = Boolean(parsed.abstained);
+        reader = "gemini-grounded-reader";
+      }
+    } catch (error) {
+      if (error instanceof GeminiRateLimitError) throw error;
+      reader = "deterministic-fallback";
+    }
+  }
+
+  const graph = syncGraph ? await syncBenchmarkEvidence(runId, normalized.questionId, normalized.question, retrieval.evidence) : { status: "not-requested" };
+  return {
+    hypothesis: abstained ? "I don't know." : answer,
+    abstained,
+    reader,
+    retrieval: {
+      totalTurns: retrieval.totalTurns,
+      queryTerms: retrieval.queryTerms,
+      retrievalMode: retrieval.retrievalMode,
+      evidence: retrieval.evidence.map(({ content, ...item }) => ({ ...item, excerpt: content.slice(0, 900) })),
+    },
+    graph,
+  };
+}
+
 async function syncBenchmarkEvidence(runId, questionId, question, evidence) {
   const availability = await checkHydra();
   if (!availability.connected) return { status: "offline", message: availability.message, proofs: 0 };
@@ -769,8 +812,20 @@ const server = createServer(async (request, response) => {
       });
       return json(response, 200, result, request);
     }
+    if (request.method === "POST" && url.pathname === "/api/benchmark/longmemeval-v2") {
+      const requestedGraphSync = url.searchParams.get("syncGraph") === "true";
+      if (!requireRole(request, response, "writer")) return;
+      const body = await readJson(request, 250_000_000); // 250MB for heavy web trajectories
+      const result = await answerLongMemEvalV2(body.record || body, {
+        topK: body.topK,
+        runId: body.runId,
+        syncGraph: requestedGraphSync || Boolean(body.syncGraph),
+      });
+      return json(response, 200, result, request);
+    }
     return serveStatic(request, response, decodeURIComponent(url.pathname));
   } catch (error) {
+    console.error("SERVER ERROR:", error);
     const rateLimited = error instanceof GeminiRateLimitError;
     if (rateLimited) response.setHeader("Retry-After", String(error.retryAfter));
     const status = rateLimited ? 429 : (error instanceof SyntaxError || /must be an object|need question_id|mismatched haystack|must be an array/i.test(error.message || "") ? 400 : 500);

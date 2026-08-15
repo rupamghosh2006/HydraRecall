@@ -59,5 +59,5 @@ These safeguards prevent transport/provider failures from being incorrectly coun
 1. ~~Resume after the Gemini rate limit resets and replace all historical fallback outputs.~~ **Done**
 2. ~~Complete LongMemEval-S and publish the generated evidence/latency report.~~ **Done**
 3. ~~Run the Gemini QA judge and publish clearly qualified accuracy results.~~ **Done**
-4. Add LongMemEval V2 and BEAM adapters.
+4. ~~Add LongMemEval V2 and BEAM adapters.~~ **LongMemEval V2 Adapter implemented and data downloaded! (BEAM adapter pending)**
 5. Extend the graph with canonical entity/alias nodes, conflict edges, and general multi-hop traversal.
