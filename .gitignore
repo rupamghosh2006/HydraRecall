@@ -6,3 +6,4 @@ runs/
 data/longmemeval/
 .benchdeps/
 .DS_Store
+data/longmemeval-v2/trajectories.jsonl
