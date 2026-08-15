@@ -15,7 +15,8 @@
     "test:api": "node scripts/check-api-auth.mjs",
     "eval:longmem": "node scripts/longmemeval-adapter.mjs",
     "eval:longmem:dry": "node scripts/longmemeval-adapter.mjs --input data/fixtures/longmemeval-mini.json --dry-run",
-    "eval:longmem:judge": "python scripts/longmemeval-judge-gemini.py"
+    "eval:longmem:judge": "python scripts/longmemeval-judge-gemini.py",
+    "eval:longmem:rerun-fallbacks": "node scripts/rerun-fallbacks.mjs --hypotheses runs/longmemeval/hydrarecall-gemini-lme-s-hypotheses.jsonl --evidence runs/longmemeval/hydrarecall-gemini-lme-s-evidence.jsonl"
   },
   "engines": {
     "node": ">=20"
