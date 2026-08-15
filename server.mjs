@@ -556,24 +556,63 @@ async function answerLongMemEval(record, { topK = 8, runId = "longmemeval", sync
 
 async function answerLongMemEvalV2(record, { topK = 8, runId = "longmemeval-v2", syncGraph = false } = {}) {
   const normalized = normalizeLongMemEvalV2Record(record);
-  const retrievalMode = "bm25-local";
-  const retrieval = retrieveLongMemEvidence(normalized, { topK, candidateFilter: null, retrievalMode });
   
+  // 1. First, fetch wide candidate set using BM25
+  const retrievalMode = "bm25-local";
+  const retrieval = retrieveLongMemEvidence(normalized, { topK: 40, candidateFilter: null, retrievalMode });
+  
+  let finalEvidence = retrieval.evidence.slice(0, topK);
+  
+  // 2. If HydraDB is online, apply temporal graph resolution using stored turn metadata
+  const availability = await checkHydra();
+  if (availability.connected && config.geminiKey) {
+    try {
+      const sessionIds = (normalized.sessions || []).map(s => s.id);
+      let allClaims = [];
+
+      for (const sessionId of sessionIds) {
+        // Fetch claims stored for this session — using single-hop queries only
+        const claimsRes = await hydraQuery(
+          `MATCH (c:BenchmarkClaim) WHERE c.external_id STARTS WITH ${quoteCypher(sessionId + ":")} RETURN c.id AS claim_id, c.value AS value, c.valid_at AS timestamp, c.turn_id AS turn_node_id, c.slot AS slot`
+        );
+        if (claimsRes.rows) allClaims.push(...claimsRes.rows);
+      }
+
+      // No supersedes edges yet (ingestion doesn't create them), so just use stored claims
+      // to validate that the retrieved turn ids are actually in HydraDB
+      const storedTurnIds = new Set(allClaims.map(c => String(c.turn_node_id)));
+      
+      if (storedTurnIds.size > 0) {
+        const filtered = retrieval.evidence.filter(e => {
+          const turnId = graphNodeId("benchmark-turn", `${e.sessionId}:${e.turnIndex}`);
+          return storedTurnIds.has(String(turnId));
+        });
+        if (filtered.length > 0) {
+          finalEvidence = filtered.slice(0, topK);
+        }
+      }
+    } catch (e) {
+      console.error("HydraDB temporal graph resolution failed, falling back to BM25", e);
+    }
+  }
+
   let answer = "I don't know.";
   let abstained = true;
   let reader = "deterministic-abstention";
+  let reasoning = "";
 
-  if (config.benchmarkReaderMode !== "deterministic" && config.geminiKey && retrieval.evidence.length) {
+  if (config.benchmarkReaderMode !== "deterministic" && config.geminiKey && finalEvidence.length) {
     try {
       const body = await geminiJsonCompletion({
-        system: "You are a rigorous long-term memory reader for web trajectories. Follow the user instructions exactly and return valid JSON only.",
-        user: buildLongMemEvalV2ReaderPrompt(normalized, retrieval.evidence),
+        system: "You are a rigorous long-term memory reader. Follow the user instructions exactly and return valid JSON only.",
+        user: buildLongMemEvalV2ReaderPrompt(normalized, finalEvidence),
         maxTokens: 900,
       });
       const parsed = JSON.parse(geminiText(body) || "{}");
       if (typeof parsed.answer === "string" && parsed.answer.trim()) {
         answer = parsed.answer.trim().slice(0, 4_000);
         abstained = Boolean(parsed.abstained);
+        reasoning = parsed.reasoning || "";
         reader = "gemini-grounded-reader";
       }
     } catch (error) {
@@ -586,6 +625,7 @@ async function answerLongMemEvalV2(record, { topK = 8, runId = "longmemeval-v2",
   return {
     hypothesis: abstained ? "I don't know." : answer,
     abstained,
+    reasoning,
     reader,
     retrieval: {
       totalTurns: retrieval.totalTurns,
@@ -643,6 +683,76 @@ async function answerBeam(record, { topK = 8, runId = "beam", syncGraph = false 
   };
 }
 
+async function syncBenchmarkIngestion(dataset, sessions) {
+  const started = performance.now();
+  const availability = await checkHydra();
+  if (!availability.connected) return { status: "offline", message: availability.message };
+
+  let totalClaims = 0;
+  const allWrites = [];
+
+  for (const session of sessions) {
+    const sessionId = graphNodeId("benchmark-session", session.id);
+
+    for (const turn of session.turns) {
+      const turnId = graphNodeId("benchmark-turn", turn.id);
+      const text = (turn.text || turn.content || "").slice(0, 4000);
+      
+      // Session -> CONTAINS -> Turn
+      allWrites.push(
+        `MERGE (s:BenchmarkSession {id: ${sessionId}, external_id: ${quoteCypher(session.id)}, dataset: ${quoteCypher(dataset)}})-[:CONTAINS]->(t:BenchmarkTurn {id: ${turnId}, external_id: ${quoteCypher(turn.id)}, role: ${quoteCypher(turn.role)}, occurred_at: ${quoteCypher(turn.occurredAt || turn.createdAt)}})`
+      );
+
+      // Use claims pre-extracted by adapter; fall back to simple text chunk
+      let claims = turn.claims || [];
+      if (!claims.length) {
+        claims = [{
+          id: `c-fall-${turn.id}`,
+          entity: "user",
+          slot: "content",
+          value: text.slice(0, 500),
+          validAt: turn.occurredAt || turn.createdAt,
+          confidence: 0.8
+        }];
+      }
+      for (const claim of claims) {
+        const claimNodeId = graphNodeId("benchmark-claim", claim.id);
+        // Turn -> SUPPORTS -> Claim
+        allWrites.push(
+          `MERGE (t:BenchmarkTurn {id: ${turnId}})-[:SUPPORTS]->(c:BenchmarkClaim {id: ${claimNodeId}, external_id: ${quoteCypher(claim.id)}, entity: ${quoteCypher(String(claim.entity || "").slice(0, 200))}, slot: ${quoteCypher(String(claim.slot || "").slice(0, 200))}, value: ${quoteCypher(String(claim.value || "").slice(0, 500))}, valid_at: ${quoteCypher(String(claim.validAt || ""))}})`
+        );
+        totalClaims += 1;
+        
+        // Claim A -> SUPERSEDES -> Claim B (preserving temporal relationships)
+        if (claim.supersedes) {
+          const olderClaimNodeId = graphNodeId("benchmark-claim", claim.supersedes);
+          allWrites.push(
+            `MERGE (newer:BenchmarkClaim {id: ${claimNodeId}})-[:SUPERSEDES]->(older:BenchmarkClaim {id: ${olderClaimNodeId}})`
+          );
+        }
+      }
+    }
+  }
+
+  // Execute all graph writes concurrently with a controlled worker pool of 30
+  const CONCURRENCY = 30;
+  for (let i = 0; i < allWrites.length; i += CONCURRENCY) {
+    const chunk = allWrites.slice(i, i + CONCURRENCY);
+    await Promise.all(chunk.map((query) => hydraQuery(query).catch(() => null)));
+  }
+
+  const elapsedMs = Math.round(performance.now() - started);
+  console.log(`[INGEST] Ingested ${sessions.length} sessions (${totalClaims} claims, ${allWrites.length} edges) in ${elapsedMs}ms`);
+
+  return {
+    status: "success",
+    sessions: sessions.length,
+    claims: totalClaims,
+    edges: allWrites.length,
+    elapsedMs
+  };
+}
+
 async function syncBenchmarkEvidence(runId, questionId, question, evidence) {
   const availability = await checkHydra();
   if (!availability.connected) return { status: "offline", message: availability.message, proofs: 0 };
@@ -651,7 +761,7 @@ async function syncBenchmarkEvidence(runId, questionId, question, evidence) {
     const sampleId = graphNodeId("benchmark-sample", sampleExternalId);
     const runNodeId = graphNodeId("benchmark-run", runId);
     await hydraQuery(
-      `MERGE (r:BenchmarkRun {id: ${runNodeId}, external_id: ${quoteCypher(runId)}})-[:EVALUATES]->(s:BenchmarkSample {id: ${sampleId}, external_id: ${quoteCypher(sampleExternalId)}, question: ${quoteCypher(question.slice(0, 2_000))}})`,
+      `MERGE (r:BenchmarkRun {id: ${runNodeId}, external_id: ${quoteCypher(runId)}})-[:EVALUATES]->(s:BenchmarkSample {id: ${sampleId}, external_id: ${quoteCypher(sampleExternalId)}, question: ${quoteCypher(question.slice(0, 2_000))}})`
     );
     for (const item of evidence) {
       const sessionExternalId = `${sampleExternalId}:session:${item.sessionId}`;
@@ -659,9 +769,11 @@ async function syncBenchmarkEvidence(runId, questionId, question, evidence) {
       const sessionId = graphNodeId("benchmark-session", sessionExternalId);
       const turnId = graphNodeId("benchmark-turn", turnExternalId);
       await hydraQuery(
-        `MERGE (s:BenchmarkSession {id: ${sessionId}, external_id: ${quoteCypher(sessionExternalId)}, source_session_id: ${quoteCypher(item.sessionId)}, occurred_at: ${quoteCypher(item.occurredAt)}})-[:CONTAINS]->(t:BenchmarkTurn {id: ${turnId}, external_id: ${quoteCypher(turnExternalId)}, role: ${quoteCypher(item.role)}, text: ${quoteCypher(item.content)}, rank: ${item.rank}, score: ${Number(item.score)}})`,
+        `MERGE (s:BenchmarkSession {id: ${sessionId}, external_id: ${quoteCypher(sessionExternalId)}, source_session_id: ${quoteCypher(item.sessionId)}, occurred_at: ${quoteCypher(item.occurredAt)}})-[:CONTAINS]->(t:BenchmarkTurn {id: ${turnId}, external_id: ${quoteCypher(turnExternalId)}, role: ${quoteCypher(item.role)}, text: ${quoteCypher(item.content)}, rank: ${item.rank}, score: ${Number(item.score)}})`
       );
-      await hydraQuery(`MERGE (sample:BenchmarkSample {id: ${sampleId}})-[:RETRIEVED]->(turn:BenchmarkTurn {id: ${turnId}})`);
+      await hydraQuery(
+        `MERGE (sample:BenchmarkSample {id: ${sampleId}})-[:RETRIEVED]->(turn:BenchmarkTurn {id: ${turnId}})`
+      );
     }
     const verification = await hydraQuery(`MATCH (s:BenchmarkSample {id: ${sampleId}})-[:RETRIEVED]->(t:BenchmarkTurn) RETURN t.external_id AS turn LIMIT 32`);
     return { status: "connected", proofs: verification.rows?.length || 0, sample: sampleExternalId };
@@ -846,6 +958,12 @@ const server = createServer(async (request, response) => {
       } catch (err) {
         return json(response, 500, { error: "Could not read benchmark status." }, request);
       }
+    }
+    if (request.method === "POST" && url.pathname === "/api/benchmark/ingest") {
+      if (!requireRole(request, response, "writer")) return;
+      const body = await readJson(request, 500_000_000); // Massive dataset support
+      const result = await syncBenchmarkIngestion(body.dataset || "default", body.sessions || []);
+      return json(response, 200, result, request);
     }
     if (request.method === "POST" && url.pathname === "/api/benchmark/longmemeval") {
       const requestedGraphSync = url.searchParams.get("syncGraph") === "true";

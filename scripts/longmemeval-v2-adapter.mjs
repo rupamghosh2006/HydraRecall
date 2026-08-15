@@ -186,6 +186,51 @@ async function run() {
 
   const trajectoryStore = await loadTrajectoriesIntoMemory(options.trajectories, requiredTrajectoryIds);
 
+  if (!options.dryRun) {
+    console.log("Pushing required trajectories to HydraDB ingestion endpoint...");
+    const trajArray = Array.from(trajectoryStore.values()).map(t => ({
+      id: t.id,
+      title: "Trajectory " + t.id,
+      turns: (t.states || []).map((s, idx) => ({
+        id: t.id + "-" + idx,
+        role: "user",
+        text: JSON.stringify(s).slice(0, 4000),
+        occurredAt: new Date().toISOString()
+      }))
+    }));
+    
+    // Batch ingest
+    for (let i = 0; i < trajArray.length; i += 20) {
+      const batch = trajArray.slice(i, i + 20);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 300_000); // 5 minute timeout
+      try {
+        const headers = { "Content-Type": "application/json" };
+        const apiKey = options.apiKey || process.env.HYDRARECALL_API_KEY;
+        if (apiKey) headers["X-API-Key"] = apiKey;
+        const res = await fetch(options.endpoint.replace(/\/$/, "") + "/api/benchmark/ingest", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ dataset: "longmemeval-v2", sessions: batch }),
+          signal: controller.signal
+        });
+        if (!res.ok) {
+          console.error(`Ingestion batch failed (HTTP ${res.status}):`, await res.text());
+        } else {
+          console.log(`  Ingested trajectories ${Math.min(i + 20, trajArray.length)}/${trajArray.length}`);
+        }
+      } catch (err) {
+        if (err.name === "AbortError") {
+          console.error(`Ingestion timeout: batch ${i / 20 + 1} exceeded 5 minutes limit.`);
+        } else {
+          console.error("Ingestion network error:", err.message);
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
   const summaryRows = [];
   let skipped = 0;
   const outputTarget = path.resolve(options.output);
@@ -227,25 +272,26 @@ async function run() {
     }
 
     const evidence = reader.retrieval?.evidence || [];
+    const hypothesis = reader.hypothesis ?? reader.answer ?? "I don't know.";
     const summaryRow = {
       questionId: record.question_id,
       questionType: record.question_type,
-      hypothesis: reader.hypothesis,
+      hypothesis,
       abstained: typeof reader.abstained === "boolean" ? reader.abstained : undefined,
       latencyMs: reader.latencyMs,
       isAbstention: String(record.question_id).endsWith("_abs"),
-      retrievedGoldEvidence: false, // Gold evidence not tracked the same way in V2?
+      retrievedGoldEvidence: false,
       retrievalMode: reader.retrieval?.retrievalMode || "bm25-local",
     };
     summaryRows.push(summaryRow);
-    const predictionLine = JSON.stringify({ question_id: record.question_id, hypothesis: reader.hypothesis });
+    const predictionLine = JSON.stringify({ question_id: record.question_id, hypothesis });
     const evidenceLine = JSON.stringify({
       question_id: record.question_id,
       question_type: record.question_type,
       reader: reader.reader,
       latency_ms: reader.latencyMs,
       abstained: Boolean(reader.abstained),
-      hypothesis: reader.hypothesis,
+      hypothesis,
       retrieved_gold_evidence: summaryRow.retrievedGoldEvidence,
       retrieval_mode: reader.retrieval?.retrievalMode || "bm25-local",
       graph: reader.graph,
@@ -253,7 +299,7 @@ async function run() {
     });
     await appendFile(outputTarget, `${predictionLine}\n`, "utf8");
     await appendFile(evidenceTarget, `${evidenceLine}\n`, "utf8");
-    console.log(`[${index + 1}/${records.length}] ${record.question_id} · ${reader.latencyMs} ms · ${evidence.length} evidence states`);
+    console.log(`[${index + 1}/${records.length}] ${record.question_id} · ${reader.latencyMs} ms · ${evidence.length} evidence states · ${reader.abstained ? 'abstained' : 'answered'}`);
   }
 
   console.log(`\nWrote ${options.output}\nWrote ${options.evidenceOutput}`);

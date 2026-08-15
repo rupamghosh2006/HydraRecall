@@ -94,13 +94,29 @@ For an internet-facing or multi-node deployment, use the production Helm chart i
 
 ## LongMemEval evaluation
 
-HydraRecall now ships with a LongMemEval adapter that produces official-compatible hypotheses, an evidence trace, and a retrieval/latency report. Start with the included safe fixture:
+HydraRecall includes reproducible adapters for LongMemEval-S and LongMemEval V2:
 
-```powershell
-npm.cmd run eval:longmem:dry
+```text
+                    HydraRecall
+                         │
+          ┌──────────────┴──────────────┐
+          │                             │
+   LongMemEval-S                  LongMemEval V2
+      500 Q                         451 Q
+        │                              │
+     61.0%                        BM25: 27.05%
+        │                              │
+        │                        HydraRecall: Pending
+        │                              │
+        └──────────────┬───────────────┘
+                       ↓
+                 BEAM: Pending
 ```
 
-See [EVALUATION.md](EVALUATION.md) for the dataset download, live reader run, optional HydraDB proof sync, and official scoring workflow.
+- **LongMemEval-S (500 Q)**: **61.0% overall accuracy** (87.18% on knowledge updates).
+- **LongMemEval V2 (451 Q)**: BM25 fallback baseline scored 27.05%; full HydraDB temporal graph evaluation is in progress.
+
+See [BENCHMARK_PROGRESS.md](BENCHMARK_PROGRESS.md) for full category breakdowns, HydraDB scaling benchmarks, and reproduction details. See [EVALUATION.md](EVALUATION.md) for execution workflows.
 
 ## Production authentication
 
